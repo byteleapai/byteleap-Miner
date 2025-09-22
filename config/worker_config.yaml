@@ -1,0 +1,36 @@
+# Worker Configuration File
+
+# Worker identification
+worker_name: "worker-01"
+
+# Miner connection settings
+miner_url: "ws://127.0.0.1:7799"
+reconnect_interval: 5
+ping_interval: 15
+ping_timeout: 30
+
+# Task execution settings
+max_concurrent_tasks: 2
+default_task_timeout: 300
+
+# Compute thread pool settings (both CPU and GPU use single thread execution)
+# No additional configuration needed - using single thread for both to avoid resource conflicts
+
+# GPU configuration
+gpu:
+  enable: true
+  auto_start: true
+  binary_path: "./bin/subnet-miner_static"  # Path to subnet-miner CUDA binary
+  socket_path: "/tmp/gpu_tensor.sock"  # Socket path matching subnet-miner CUDA binary
+
+# System monitoring settings
+heartbeat_interval: 30
+system_info_interval: 60
+
+# Logging configuration
+logging:
+  level: "DEBUG"
+  filepath: "logs/worker.log"
+  rotation: "1 day"
+  retention: "7 days"
+  format: "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{extra[project_name]}:{name}:{line}</cyan> - <level>{message}</level>"

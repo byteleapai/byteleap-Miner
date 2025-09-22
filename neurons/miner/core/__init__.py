@@ -1,0 +1,1 @@
+"""Miner core implementation."""

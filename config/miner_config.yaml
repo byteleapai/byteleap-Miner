@@ -1,0 +1,46 @@
+# Miner configuration file
+
+# Network configuration
+netuid: 128
+subtensor:
+  network: finney                 # Network type: local, test, finney
+metagraph:
+  sync_interval: 60               # Metagraph sync interval (in seconds)
+  validator_whitelist:            # Whitelist validators (with optional axon override)
+    "5FWiXLaW5s9q8xC7FrBZ3JkGJyC6Feh2Xep5awRWrJPesMpz": null
+    "5F9KN9FQCzNzkyc9ZtmsdFJzc5GTVQCwkd3zER4gm9uyJi2H": null
+  validator_min_stake_tao: 10000  # Minimum stake required for non-whitelisted validators (in TAO)
+  blacklist:                      # Passive blacklist configuration
+    threshold: 5                  # Failures before blacklisting
+    ttl_seconds: 600              # Blacklist TTL (10 minutes)
+
+# Wallet configuration
+wallet:
+  name: miner-testnet
+  hotkey: default
+  path: ~/.bittensor/wallets
+
+# Logging configuration
+logging:
+  log_level: DEBUG
+  enable_debug: true
+  log_dir: ./logs
+
+# Monitoring configuration
+heartbeat_interval: 60            # Heartbeat interval (in seconds)
+task_poll_interval: 30            # Task polling interval (in seconds)
+max_retries: 3                    # Maximum retry count
+
+# Communication configuration
+communication:
+  connection_timeout: 10
+  request_timeout: 30
+
+# Worker management configuration
+worker_management:
+  host: "0.0.0.0"                # WebSocket server host
+  port: 7799                     # WebSocket server port  
+  heartbeat_interval: 30         # Worker heartbeat interval (in seconds)
+  heartbeat_timeout: 90          # Worker heartbeat timeout (in seconds)
+  max_workers: 100               # Maximum number of workers
+  max_tasks_per_worker: 1        # Maximum concurrent tasks per worker
