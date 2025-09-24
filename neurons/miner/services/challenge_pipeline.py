@@ -63,13 +63,15 @@ class ChallengePipeline:
                 commitments=[Commitment(**c) for c in result.get("commitments", [])],
             )
 
+            # Phase 1 must respond quickly; if validator doesn't respond
+            # (e.g., no proof requests) within 30s, free the worker.
             challenge_synapse_result = await self.transport.send_single_request(
                 operation="challenge_commitment",
                 synapse_class=ProtocolRegistry.get(ProtocolTypes.CHALLENGE),
                 request_data=commitment_data,
                 target_hotkey=validator_info["hotkey"],
                 axon=validator_info["axon"],
-                timeout=300,
+                timeout=30,
                 validator_uid=validator_info["uid"],
             )
 
@@ -154,3 +156,8 @@ class ChallengePipeline:
         finally:
             self._challenge_source_map.pop(task_id, None)
             self._challenge_timestamps.pop(task_id, None)
+            # Mark task session complete, unsetting busy on the worker
+            try:
+                await self.worker_manager.finalize_task_session(worker_id, task_id)
+            except Exception:
+                pass

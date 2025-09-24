@@ -254,16 +254,21 @@ class MinerCommunicationService(BaseCommunicationService):
             # Defensive validation of required parameters
             if not isinstance(task_id, str) or not task_id.strip():
                 bt.logging.warning("⚠️ Ignore task result | reason=invalid task_id")
+                await self.worker_manager.finalize_task_session(
+                    worker_id, task_id or ""
+                )
                 return
             if not isinstance(worker_id, str) or not worker_id.strip():
                 bt.logging.warning(
                     f"⚠️ Ignore task result | task_id={task_id} reason=invalid worker_id"
                 )
+                await self.worker_manager.finalize_task_session(worker_id, task_id)
                 return
             if not isinstance(result, dict):
                 bt.logging.warning(
                     f"⚠️ Ignore task result | task_id={task_id} reason=invalid result format"
                 )
+                await self.worker_manager.finalize_task_session(worker_id, task_id)
                 return
             bt.logging.debug(f"Task result | task_id={task_id} worker_id={worker_id}")
             bt.logging.debug(f"Task result data | {self._truncate_log_data(result)}")
@@ -274,6 +279,7 @@ class MinerCommunicationService(BaseCommunicationService):
                 bt.logging.warning(
                     f"❌ Task failed | task_id={task_id} worker_id={worker_id} error={error_msg}"
                 )
+                await self.worker_manager.finalize_task_session(worker_id, task_id)
                 return
 
             challenge_result = result.get("result", {})
@@ -281,11 +287,13 @@ class MinerCommunicationService(BaseCommunicationService):
                 bt.logging.error(
                     f"❌ Task result malformed | task_id={task_id} reason=result not dict"
                 )
+                await self.worker_manager.finalize_task_session(worker_id, task_id)
                 return
             if not challenge_result.get("commitments"):
                 bt.logging.error(
                     f"❌ Task result missing commitments | task_id={task_id}"
                 )
+                await self.worker_manager.finalize_task_session(worker_id, task_id)
                 return
 
             # Merge worker timestamps into pipeline state
@@ -326,15 +334,12 @@ class MinerCommunicationService(BaseCommunicationService):
             )
             return
 
-        # Check for active workers
-        if not self.worker_manager.has_active_workers():
-            worker_count = len(self.worker_manager.workers)
-            bt.logging.debug(
-                f"Skipping task polling - no active workers available (total workers: {worker_count})"
-            )
+        # Ensure at least one worker is connected; if none, skip.
+        if not self.worker_manager.workers:
+            bt.logging.debug("Skipping task polling - no workers connected")
             return
 
-        # Wait for sufficient idle worker capacity (spin until available)
+        # Wait for full idle capacity (all workers non-busy) before polling
         await self._wait_for_sufficient_capacity()
 
         # Create rotated validator list for fair distribution
@@ -352,11 +357,14 @@ class MinerCommunicationService(BaseCommunicationService):
             f"Task polling start | validators={num_validators} idle={idle_percentage:.1f}% start_index={self._polling_start_index-1}"
         )
 
-        # Poll all validators sequentially - capacity is already assured
+        # Poll all validators sequentially - ensure capacity between validators
         for i, (uid, axon, hotkey) in enumerate(rotated_validators):
             try:
                 bt.logging.debug(f"Polling validator {uid} ({i+1}/{num_validators})")
                 await self._poll_single_validator(uid, axon, hotkey)
+                # Before moving to the next validator, ensure workers are all idle again
+                if i < num_validators - 1:
+                    await self._wait_for_sufficient_capacity()
 
             except Exception as e:
                 bt.logging.error(f"❌ Poll error | uid={uid} error={e}")
@@ -364,15 +372,31 @@ class MinerCommunicationService(BaseCommunicationService):
         bt.logging.debug(f"Task polling complete | validators={num_validators}")
 
     async def _wait_for_sufficient_capacity(self) -> None:
-        """Spin-wait until sufficient idle worker capacity is available"""
-        required_idle_percentage = 75.0
+        """Spin-wait until sufficient idle worker capacity is available or timeout"""
+        required_idle_percentage = 100.0  # Require all workers to be idle
         check_interval = 1.0  # Check every second
+        max_wait_seconds = 60.0
+        start = time.monotonic()
 
         while self.is_running:
             current_idle_percentage = self.worker_manager.get_idle_worker_percentage()
 
             if current_idle_percentage >= required_idle_percentage:
                 return  # Sufficient capacity available
+
+            # Timeout
+            if time.monotonic() - start >= max_wait_seconds:
+                total_workers = len(self.worker_manager.workers)
+                busy_workers = sum(
+                    1
+                    for w in self.worker_manager.workers.values()
+                    if w.status == "busy"
+                )
+                bt.logging.error(
+                    f"Capacity wait timeout | waited={max_wait_seconds:.0f}s current={current_idle_percentage:.1f}% "
+                    f"required={required_idle_percentage}% workers={total_workers} busy={busy_workers}"
+                )
+                raise TimeoutError("Wait for sufficient idle worker capacity timed out")
 
             # Log capacity status periodically
             total_workers = len(self.worker_manager.workers)

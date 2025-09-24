@@ -224,7 +224,7 @@ async def main():
     setup_logging(config)
 
     # Display configuration information
-    bt.logging.info(f"🌐 Net | id={config.get('netuid')}")
+    bt.logging.info(f"🌐 Netuid | id={config.get('netuid')}")
     bt.logging.info(f"👛 Wallet | name={config.get('wallet.name')}")
     bt.logging.info(f"🔑 Hotkey | name={config.get('wallet.hotkey')}")
 

@@ -314,15 +314,29 @@ class WorkerManager:
         else:
             task_id = data.get("task_id")
             result_data = data.get("data", {})
-        if task_id in worker.current_tasks:
-            worker.current_tasks.remove(task_id)
-        worker.status = "online" if not worker.current_tasks else "busy"
+        # Keep worker busy across two-phase flow (commit -> proof -> submit).
+        # Finalization (unset busy) occurs when the challenge pipeline completes
+        # or times out, via finalize_task_session().
         if self.communication_service:
             asyncio.create_task(
                 self.communication_service.handle_worker_task_result(
                     task_id, result_data, worker.worker_id
                 )
             )
+
+    async def finalize_task_session(self, worker_id: str, task_id: str) -> None:
+        """Mark task session complete and update worker status.
+
+        Removes the task_id from the worker's current_tasks set and sets status
+        to online if no other tasks are running.
+        """
+        async with self.worker_lock:
+            worker = self.workers.get(worker_id)
+            if not worker:
+                return
+            if task_id in worker.current_tasks:
+                worker.current_tasks.remove(task_id)
+            worker.status = "online" if not worker.current_tasks else "busy"
 
     async def _heartbeat_monitor(self):
         while self.is_running:
