@@ -4,14 +4,12 @@ Responsible for network communication with validator, including heartbeat report
 """
 
 import asyncio
+import json
+import random
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import bittensor as bt
-
-if TYPE_CHECKING:
-    from neurons.miner.services.resource_aggregator import ResourceAggregator
-    from neurons.miner.services.worker_manager import WorkerManager
 
 from neurons.miner.services.challenge_pipeline import ChallengePipeline
 from neurons.miner.services.heartbeat_service import HeartbeatService
@@ -20,6 +18,7 @@ from neurons.miner.services.validator_cache import ValidatorCache
 from neurons.shared.base_communication import BaseCommunicationService
 from neurons.shared.config.config_manager import ConfigManager
 from neurons.shared.protocols import (CommunicationResult, ComputeChallenge,
+                                      GetVmgwEnrollTokenSynapse,
                                       ProtocolRegistry, ProtocolTypes,
                                       TaskRequest, TaskResponse)
 
@@ -37,6 +36,10 @@ COMM_TASK_SHUTDOWN_TIMEOUT = 1  # Timeout for communication task shutdown
 # Loop and retry constants
 COMMUNICATION_LOOP_SLEEP_SECONDS = 1  # Sleep interval in communication loop
 RETRY_BACKOFF_ATTEMPTS = 5  # Number of retry attempts after communication error
+VMGW_VALIDATOR_TOTAL_TIMEOUT = (
+    30  # Total seconds to wait per validator when fetching enroll tokens
+)
+VMGW_SINGLE_QUERY_TIMEOUT = 10  # Individual dendrite query timeout
 
 
 class MinerCommunicationService(BaseCommunicationService):
@@ -57,7 +60,6 @@ class MinerCommunicationService(BaseCommunicationService):
         metagraph: bt.metagraph,
         config: ConfigManager,
         worker_manager: "WorkerManager",
-        resource_aggregator: "ResourceAggregator",
         miner_version: Optional[str] = None,
     ):
         """
@@ -69,7 +71,6 @@ class MinerCommunicationService(BaseCommunicationService):
             metagraph: Bittensor metagraph instance
             config: Complete miner configuration
             worker_manager: Worker manager service for task distribution
-            resource_aggregator: Resource aggregator service for system metrics
 
         Raises:
             ValueError: If configuration values are invalid
@@ -82,9 +83,6 @@ class MinerCommunicationService(BaseCommunicationService):
 
         self.session_crypto = CryptoManager(wallet)
         self.session_cache = SessionCache(self.session_crypto, config.config)
-        self.transport = SessionTransport(
-            wallet, self.session_cache, self.session_crypto
-        )
 
         # Miner-specific configuration
         self.netuid = config.get_positive_number("netuid", int)
@@ -101,12 +99,16 @@ class MinerCommunicationService(BaseCommunicationService):
             subtensor, int(self.netuid), config, metagraph
         )
 
+        # Transport depends on validator_cache for passive blacklisting accounting
+        self.transport = SessionTransport(
+            wallet, self.session_cache, self.session_crypto, self.validator_cache
+        )
+
         # Service state
         self.is_running = False
         self._comm_task: Optional[asyncio.Task] = None
         self._polling_task: Optional[asyncio.Task] = None
         self.worker_manager = worker_manager
-        self.resource_aggregator = resource_aggregator
 
         # Validator polling rotation state
         self._polling_start_index = 0
@@ -115,7 +117,6 @@ class MinerCommunicationService(BaseCommunicationService):
         # Services
         self.heartbeat_service = HeartbeatService(
             wallet,
-            resource_aggregator,
             self.validator_cache,
             self.transport,
             HEARTBEAT_CLEANUP_INTERVAL,
@@ -126,6 +127,96 @@ class MinerCommunicationService(BaseCommunicationService):
         self.challenge_pipeline = ChallengePipeline(self.transport, worker_manager)
 
     # Cleanup handled by services
+
+    async def acquire_vmgw_enroll_token(self, worker_id: str) -> Dict[str, Any]:
+        """
+        Fetch VM gateway enrollment token for a worker by polling validators.
+
+        Implements the 30-second per-validator window and retry semantics described in
+        VM_ARCH: code=0 token=None => retry after tryAgainInSec (default 5),
+        code=1000/1003/>0 => switch to next validator immediately.
+        """
+        validators = self.validator_cache.get_validators()
+        if not validators:
+            raise RuntimeError(
+                "no validators available for VM enrollment token polling"
+            )
+
+        shuffled = validators.copy()
+        random.shuffle(shuffled)
+
+        synapse_class = ProtocolRegistry.get(ProtocolTypes.GET_VMGW_ENROLL_TOKEN)
+        last_error = None
+
+        for uid, axon, hotkey in shuffled:
+            start_time = time.monotonic()
+            while (time.monotonic() - start_time) < VMGW_VALIDATOR_TOTAL_TIMEOUT:
+                remaining = VMGW_VALIDATOR_TOTAL_TIMEOUT - (
+                    time.monotonic() - start_time
+                )
+                timeout = min(VMGW_SINGLE_QUERY_TIMEOUT, max(1, int(remaining)))
+                result = await self._send_single_request(
+                    operation="vmgw_enroll_token",
+                    synapse_class=synapse_class,
+                    request_data={"worker_id": worker_id},
+                    target_hotkey=hotkey,
+                    axon=axon,
+                    timeout=timeout,
+                    validator_uid=uid,
+                )
+
+                if not result.success or not result.data:
+                    last_error = result.error_message or "validator query failed"
+                    bt.logging.warning(
+                        f"⚠️ VMGW token query failed | validator={hotkey} err={last_error}"
+                    )
+                    break
+
+                try:
+                    response = result.data
+                    if isinstance(response, str):
+                        response = json.loads(response)
+                    synapse_response = GetVmgwEnrollTokenSynapse(**response)
+                except Exception as e:
+                    last_error = f"invalid response payload: {e}"
+                    bt.logging.warning(
+                        f"⚠️ VMGW token response invalid | validator={hotkey} err={e}"
+                    )
+                    break
+
+                if synapse_response.code != 0:
+                    # Non-success codes trigger immediate validator switch
+                    last_error = (
+                        synapse_response.error_message
+                        or f"code={synapse_response.code}"
+                    )
+                    bt.logging.warning(
+                        f"⚠️ VMGW token denied | validator={hotkey} code={synapse_response.code}"
+                    )
+                    break
+
+                if synapse_response.token:
+                    return {
+                        "token": synapse_response.token,
+                        "expires_at": synapse_response.expires_at,
+                        "enrollment_url": synapse_response.enrollment_url,
+                    }
+
+                wait_seconds = synapse_response.try_again_in_sec or 5
+                # Check if waiting would exceed the total validator window
+                if (
+                    time.monotonic() - start_time + wait_seconds
+                ) >= VMGW_VALIDATOR_TOTAL_TIMEOUT:
+                    bt.logging.warning(
+                        f"⚠️ VMGW token wait exceeds window | validator={hotkey}"
+                    )
+                    break
+
+                await asyncio.sleep(wait_seconds)
+
+            # Move to next validator
+
+        raise RuntimeError(last_error or "failed to acquire VMGW enroll token")
 
     async def start(self) -> None:
         """
@@ -373,9 +464,9 @@ class MinerCommunicationService(BaseCommunicationService):
 
     async def _wait_for_sufficient_capacity(self) -> None:
         """Spin-wait until sufficient idle worker capacity is available or timeout"""
-        required_idle_percentage = 100.0  # Require all workers to be idle
-        check_interval = 1.0  # Check every second
-        max_wait_seconds = 60.0
+        required_idle_percentage = 100.0
+        check_interval = 5.0
+        max_wait_seconds = 90.0
         start = time.monotonic()
 
         while self.is_running:
@@ -600,7 +691,7 @@ class MinerCommunicationService(BaseCommunicationService):
             )
             if success:
                 bt.logging.info(
-                    f"📤 Distributed | challenge_id={challenge_id} worker=idle"
+                    f"Distributed | challenge_id={challenge_id} worker=idle"
                 )
                 return True
             else:
@@ -716,7 +807,7 @@ class MinerCommunicationService(BaseCommunicationService):
                 task_response = TaskResponse(**result.data)
                 if task_response.task_type != "no_task":
                     bt.logging.info(
-                        f"📋 Task received | type={task_response.task_type} validator_uid={uid}"
+                        f"✅ Task received | type={task_response.task_type} validator_uid={uid}"
                     )
                 return task_response
 

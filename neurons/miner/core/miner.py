@@ -13,12 +13,11 @@ from typing import Any, Dict, List, Optional
 import bittensor as bt
 
 from neurons.miner.services.communication import MinerCommunicationService
-from neurons.miner.services.resource_aggregator import ResourceAggregator
 from neurons.miner.services.worker_manager import WorkerManager
 from neurons.shared.config.config_manager import ConfigManager
 
 # Miner version
-MINER_VERSION = "0.1.0"
+MINER_VERSION = "0.1.1"
 
 
 class Miner:
@@ -68,14 +67,12 @@ class Miner:
 
         # Service components
         self.worker_manager = WorkerManager(config)
-        self.resource_aggregator = ResourceAggregator()
         self.communication_service = MinerCommunicationService(
             self.wallet,
             self.subtensor,
             self.metagraph,
             config,
             self.worker_manager,
-            self.resource_aggregator,
             miner_version=MINER_VERSION,
         )
 
@@ -93,7 +90,7 @@ class Miner:
 
         def signal_handler(signum, frame):
             signal_name = "SIGINT" if signum == signal.SIGINT else "SIGTERM"
-            bt.logging.info(f"⏹️ Miner signal | sig={signum} name={signal_name}")
+            bt.logging.info(f"Miner signal | sig={signum} name={signal_name}")
             self._shutdown_event.set()
 
         signal.signal(signal.SIGINT, signal_handler)
@@ -154,7 +151,7 @@ class Miner:
             await self._shutdown_event.wait()
 
         except KeyboardInterrupt:
-            bt.logging.info("⏹️ Miner interrupt | stopping")
+            bt.logging.info("⚠️ Miner interrupt | stopping")
         except Exception as e:
             bt.logging.error(f"❌ Miner run error | error={e}")
         finally:
@@ -162,7 +159,12 @@ class Miner:
 
     def get_status(self) -> Dict[str, Any]:
         """Get miner status"""
-        aggregated_metrics = self.resource_aggregator.get_aggregated_metrics()
+        worker_status = self.worker_manager.get_status()
+        aggregated_metrics = {
+            "worker_count": worker_status.get("total_workers", 0),
+            "online_workers": worker_status.get("online_workers", 0),
+            "busy_workers": worker_status.get("busy_workers", 0),
+        }
 
         return {
             "is_running": self.is_running,

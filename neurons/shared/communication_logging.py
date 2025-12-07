@@ -22,7 +22,7 @@ class CommunicationLogger:
     ) -> None:
         """Log start of request processing"""
         bt.logging.debug(
-            f"▶️ start | op={operation} type={synapse_type} peer={peer_address}"
+            f"start | op={operation} type={synapse_type} peer={peer_address}"
         )
 
     def log_request_complete(
@@ -43,7 +43,7 @@ class CommunicationLogger:
     ) -> None:
         """Log outbound request initiation"""
         bt.logging.info(
-            f"📤 send | op={operation} type={synapse_type} targets={target_count}"
+            f"Outbound send | op={operation} type={synapse_type} targets={target_count}"
         )
 
     def log_outbound_results(
@@ -63,12 +63,12 @@ class CommunicationLogger:
         """Log encryption/decryption performance"""
         if encryption_time > 0 and decryption_time > 0:
             bt.logging.debug(
-                f"🔐 crypto | op={operation} enc={encryption_time:.1f}ms dec={decryption_time:.1f}ms"
+                f"crypto stats | op={operation} enc={encryption_time:.1f}ms dec={decryption_time:.1f}ms"
             )
         elif encryption_time > 0:
-            bt.logging.debug(f"🔐 enc | op={operation} time={encryption_time:.1f}ms")
+            bt.logging.debug(f"enc stats | op={operation} time={encryption_time:.1f}ms")
         elif decryption_time > 0:
-            bt.logging.debug(f"🔐 dec | op={operation} time={decryption_time:.1f}ms")
+            bt.logging.debug(f"dec stats | op={operation} time={decryption_time:.1f}ms")
 
     def log_validation_error(
         self, operation: str, error_message: str, peer_address: str = "unknown"
@@ -83,7 +83,7 @@ class CommunicationLogger:
     ) -> None:
         """Log security-related events"""
         bt.logging.warning(
-            f"🔒 security | type={event_type} peer={peer_address} detail={details}"
+            f"⚠️ Security event | type={event_type} peer={peer_address} detail={details}"
         )
 
 

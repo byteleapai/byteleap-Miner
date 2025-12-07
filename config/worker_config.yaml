@@ -13,9 +13,6 @@ ping_timeout: 30
 max_concurrent_tasks: 2
 default_task_timeout: 300
 
-# Compute thread pool settings (both CPU and GPU use single thread execution)
-# No additional configuration needed - using single thread for both to avoid resource conflicts
-
 # GPU configuration
 gpu:
   enable: true
@@ -23,14 +20,17 @@ gpu:
   binary_path: "./bin/subnet-miner_static"  # Path to subnet-miner CUDA binary
   socket_path: "/tmp/gpu_tensor.sock"  # Socket path matching subnet-miner CUDA binary
 
+vmgw:
+  enable: false
+  socket_path: "/run/libvirt/libvirt-sock"  # Socket path to libvirt
+
 # System monitoring settings
 heartbeat_interval: 30
-system_info_interval: 60
 
 # Logging configuration
 logging:
   level: "DEBUG"
   filepath: "logs/worker.log"
   rotation: "1 day"
-  retention: "7 days"
+  retention: "3 days"
   format: "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{extra[project_name]}:{name}:{line}</cyan> - <level>{message}</level>"

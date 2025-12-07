@@ -18,9 +18,10 @@ from neurons.shared.utils.system_monitor import \
 from neurons.worker.communication.websocket_client import WebSocketClient
 from neurons.worker.config.worker_config import WorkerConfig
 from neurons.worker.core.task_executor import TaskExecutor
+from neurons.worker.vm import VMGatewayClient
 
 # Worker version
-WORKER_VERSION = "0.0.2"
+WORKER_VERSION = "0.0.3"
 
 
 class WorkerService:
@@ -35,22 +36,122 @@ class WorkerService:
 
         self.worker_id = self.config.get_worker_id()
         self.worker_name = self.config.get_worker_name()
+        self.capabilities = self.config.get_capabilities()
 
         # Core components
         self.system_monitor = SystemMonitor()
         self.task_executor = TaskExecutor(self.config)
         self.websocket_client = WebSocketClient(self.config)
 
+        # Conditionally create VMGW client based on configuration
+        self.vmgw_client = None
+        if self.config.get("vmgw.enable"):
+            self.vmgw_client = VMGatewayClient(
+                worker_service=self,
+                worker_id=self.worker_id,
+                worker_version=WORKER_VERSION,
+                capabilities=self.capabilities,
+                config_file=self.config.config_file,
+            )
+
         # Runtime status
         self.is_running = False
         self._shutdown_event = asyncio.Event()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Setup signal handlers
         self._setup_signal_handlers()
 
+        # Check GPU models during initialization
+        self._check_gpu_models()
+
         logger.success(
-            f"🧩 Worker initialized | id={self.worker_name or self.worker_id}"
+            f"✅ Worker initialized | id={self.worker_name or self.worker_id}"
         )
+
+    def _check_gpu_models(self):
+        """Check if GPU models are in the allowed whitelist"""
+        # GPU Model Whitelist - only these models are allowed to run
+        gpu_whitelist = [
+            {"pattern": "RTX 3090", "description": "NVIDIA GeForce RTX 3090 (24GB)"},
+            {"pattern": "RTX 4090", "description": "NVIDIA GeForce RTX 4090 (24GB)"},
+            {"pattern": "RTX 5090", "description": "NVIDIA GeForce RTX 5090 (32GB)"},
+            {"pattern": "A100-SXM4-80GB", "description": "NVIDIA A100 80GB SXM4"},
+            {"pattern": "A100 80GB", "description": "NVIDIA A100 80GB"},
+            {"pattern": "A100-PCIE-80GB", "description": "NVIDIA A100 80GB PCIe"},
+            {"pattern": "H100 80GB", "description": "NVIDIA H100 80GB"},
+            {"pattern": "H100-PCIE-80GB", "description": "NVIDIA H100 80GB PCIe"},
+            {"pattern": "H100 94GB", "description": "NVIDIA H100 94GB HBM3"},
+            {"pattern": "H100 NVL", "description": "NVIDIA H100 NVL"},
+            {"pattern": "H200", "description": "NVIDIA H200 (141GB)"},
+            {"pattern": "B200", "description": "NVIDIA Blackwell B200"},
+        ]
+
+        try:
+            # Try to get GPU info using system monitor
+            allowed_gpus = 0
+            nvml_gpus = self.system_monitor.get_gpu_info_nvml()
+            if not nvml_gpus:
+                logger.warning(f"⚠️ No available GPUs found in the system!")
+                return
+
+            for gpu in nvml_gpus:
+                gpu_name = gpu.get("name", "Unknown")
+                if self._validate_gpu_against_whitelist(gpu_name, gpu_whitelist):
+                    allowed_gpus += 1
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to check GPU models: {e}")
+            return
+
+        logger.info(
+            f"GPU system info initialized with {len(nvml_gpus)} device(s) total, {allowed_gpus} allowed,\
+                    {len(nvml_gpus) - allowed_gpus} disallowed (no CUDA contexts created)"
+        )
+
+        if allowed_gpus == 0:
+            logger.warning(f"Error: No available GPUs found in the system!")
+            logger.warning(f"Total GPUs detected: {len(nvml_gpus)}")
+            logger.warning(f"Available GPUs: {allowed_gpus}")
+            logger.warning(
+                f"Note: Only specific GPU models are allowed to run this program."
+            )
+
+    def _validate_gpu_against_whitelist(self, gpu_name: str, whitelist: list) -> bool:
+        """
+        Validate if a GPU model is in the whitelist using case-insensitive substring matching
+
+        Returns:
+            bool: True if GPU is allowed, False otherwise
+        """
+        logger.debug(f"Checking GPU: '{gpu_name}'")
+
+        # Check each whitelist entry using case-insensitive substring matching
+        for entry in whitelist:
+            if self._contains_ignore_case(gpu_name, entry["pattern"]):
+                logger.info(
+                    f"✅ GPU '{gpu_name}' is ALLOWED and will be used for computation"
+                )
+                return True
+
+        # If not in whitelist, show warning
+        logger.warning(f"❌ No match found for: {gpu_name}")
+        logger.warning(f"⚠️ GPU '{gpu_name}' is NOT ALLOWED and will be disabled")
+        logger.warning("Only the following GPU models are recommended:")
+        for entry in whitelist:
+            logger.warning(f"  • {entry['description']}")
+
+        logger.warning(f"===Allowed GPU Models===")
+        for entry in whitelist:
+            logger.warning(f"  - {entry['pattern']} - {entry['description']}")
+        logger.warning(f"========================")
+        return False
+
+    def _contains_ignore_case(self, haystack: str, needle: str) -> bool:
+        """Helper function for case-insensitive substring search"""
+        if not haystack or not needle:
+            return False
+
+        return needle.lower() in haystack.lower()
 
     def _setup_logging(self):
         """Setup logging configuration"""
@@ -81,7 +182,7 @@ class WorkerService:
         )
 
         logger.info(
-            f"🧾 Logging setup | level={log_level} rotation={self.config.get_non_empty_string('logging.rotation')}"
+            f"Logging setup | level={log_level} rotation={self.config.get_non_empty_string('logging.rotation')}"
         )
 
         # Suppress websockets ping/pong debug messages that appear in file but not console
@@ -112,13 +213,17 @@ class WorkerService:
         logger.info(f"🚀 Starting worker | id={self.worker_id}")
 
         try:
-
+            self._loop = asyncio.get_running_loop()
             await self.task_executor.start()
-            logger.info("🧮 Task executor started")
+            logger.info("Task executor started")
 
             await self.websocket_client.connect()
             await self._register_worker()
             self._connect_components()
+
+            if self.vmgw_client:
+                self.vmgw_client.start()
+                logger.info("VMGW client started")
 
             self.is_running = True
             logger.success(f"✅ Worker started | id={self.worker_id}")
@@ -159,7 +264,7 @@ class WorkerService:
             "worker_id": self.worker_id,
             "worker_name": self.worker_name,
             "worker_version": WORKER_VERSION,
-            "capabilities": self.config.get_capabilities(),
+            "capabilities": self.capabilities,
             "system_info": system_info,
         }
 
@@ -232,7 +337,7 @@ class WorkerService:
                 # Wait before retry to avoid tight error loop
                 await asyncio.sleep(5)
 
-        logger.info("⏹️ Main loop exited")
+        logger.info("Main loop exited")
         await self.stop()
 
     async def _send_heartbeat(self):
@@ -394,12 +499,54 @@ class WorkerService:
 
         # Cleanup task executor and plugins
         await self.task_executor.cleanup()
+
+        if self.vmgw_client:
+            self.vmgw_client.stop()
+            logger.info("⏹️ VMGW client stopped")
+
         await self.websocket_client.disconnect()
 
         self.is_running = False
         self._shutdown_event.set()
+        self._loop = None
 
         logger.success("✅ Worker service stopped")
+
+    async def _request_vmgw_enroll_token_async(self) -> Dict[str, Any]:
+        """Request VM gateway enrollment token from miner via websocket."""
+        request_message = {
+            "type": "vmgw_enroll_token_request",
+            "data": {"worker_id": self.worker_id},
+        }
+        await self.websocket_client.send_message(request_message)
+        response = await self.websocket_client.wait_for_message(
+            "vmgw_enroll_token_response", timeout=60
+        )
+        if not response:
+            raise RuntimeError("VMGW token request timed out")
+
+        data = response.get("data", {}) if isinstance(response, dict) else {}
+        code = data.get("code")
+        if code != 0:
+            error_message = (
+                data.get("error") or f"token request failed with code={code}"
+            )
+            raise RuntimeError(error_message)
+
+        return {
+            "token": data.get("token"),
+            "expires_at": data.get("expires_at"),
+            "enrollment_url": data.get("enrollment_url"),
+        }
+
+    def request_vmgw_enroll_token_sync(self) -> Dict[str, Any]:
+        """Thread-safe helper for VM gateway client to obtain enrollment token."""
+        if not self._loop:
+            raise RuntimeError("worker event loop not initialized")
+        future = asyncio.run_coroutine_threadsafe(
+            self._request_vmgw_enroll_token_async(), self._loop
+        )
+        return future.result(timeout=90)
 
     def get_status(self) -> Dict[str, Any]:
         """Get worker status"""

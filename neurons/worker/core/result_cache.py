@@ -56,7 +56,7 @@ class ResultCache:
             try:
                 self._cache[validator_hotkey][uuid] = MerkleTree(row_hashes)
                 logger.debug(
-                    f"🌳 Merkle cached | validator={validator_hotkey} uuid={uuid}"
+                    f"Merkle cached | validator={validator_hotkey} uuid={uuid}"
                 )
             except Exception as e:
                 logger.error(
@@ -130,7 +130,7 @@ class ResultCache:
                         # Clear GPU result cache after retrieving Phase 2 data
                         clear_response = self._gpu_client.clear_result_cache(uuid)
                         if clear_response and clear_response.get("success"):
-                            logger.debug(f"🧹 GPU result cache cleared | uuid={uuid}")
+                            logger.debug(f"GPU result cache cleared | uuid={uuid}")
                         else:
                             logger.warning(
                                 f"⚠️ GPU result cache clear failed | uuid={uuid} resp={clear_response}"
@@ -151,4 +151,4 @@ class ResultCache:
         """
         if validator_hotkey in self._cache:
             del self._cache[validator_hotkey]
-            logger.debug(f"🧹 Cache cleared | validator={validator_hotkey}")
+            logger.debug(f"Cache cleared | validator={validator_hotkey}")

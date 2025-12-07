@@ -18,6 +18,7 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from neurons.miner.services.message_models import (ProofResponseMessage,
                                                    TaskResultMessage,
+                                                   VmgwEnrollTokenRequest,
                                                    WorkerHeartbeatMessage,
                                                    WorkerRegistration)
 from neurons.shared.config.config_manager import ConfigManager
@@ -69,7 +70,8 @@ class WorkerManager:
         self.communication_service = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._pending_proof_requests: Dict[str, asyncio.Future] = {}
-        bt.logging.info(f"🧩 Worker manager initialized | addr={self.host}:{self.port}")
+        self._vmgw_token_locks: Dict[str, asyncio.Lock] = {}
+        bt.logging.info(f"Worker manager initialized | addr={self.host}:{self.port}")
 
     async def _close_worker_connection_properly(
         self, worker_connection: WorkerConnection
@@ -84,7 +86,7 @@ class WorkerManager:
                 )
                 await asyncio.sleep(CONNECTION_CLOSE_DELAY)
                 bt.logging.info(
-                    f"🔐 Worker {worker_connection.worker_id} connection closed properly"
+                    f"✅ Worker {worker_connection.worker_id} connection closed properly"
                 )
         except Exception as e:
             bt.logging.warning(
@@ -109,7 +111,7 @@ class WorkerManager:
             )
             self._heartbeat_task = asyncio.create_task(self._heartbeat_monitor())
             self.is_running = True
-            bt.logging.info(f"🧩 Worker manager started | ws://{self.host}:{self.port}")
+            bt.logging.info(f"🚀 Worker manager started | ws://{self.host}:{self.port}")
         except Exception as e:
             bt.logging.error(f"❌ Worker manager start error | error={e}")
             raise
@@ -135,7 +137,7 @@ class WorkerManager:
             self.websocket_server.close()
             await self.websocket_server.wait_closed()
         self.is_running = False
-        bt.logging.info("🧩 Worker manager stopped")
+        bt.logging.info("✅ Worker manager stopped")
 
     async def _handle_worker_connection(self, websocket: ServerConnection):
         worker_id = None
@@ -160,7 +162,7 @@ class WorkerManager:
 
             worker_name = reg.worker_name or worker_id
             bt.logging.debug(
-                f"🧩 Registration received | id={worker_id} name={worker_name}"
+                f"Registration received | id={worker_id} name={worker_name}"
             )
 
             # Enforce worker_version presence
@@ -181,12 +183,14 @@ class WorkerManager:
                 status="online",
                 current_tasks=set(),
             )
+            # Replace existing connection atomically under lock, then close old outside lock
+            old_connection = None
             async with self.worker_lock:
                 if worker_id in self.workers:
-                    await self._close_worker_connection_properly(
-                        self.workers[worker_id]
-                    )
+                    old_connection = self.workers[worker_id]
                 self.workers[worker_id] = worker_connection
+            if old_connection is not None:
+                await self._close_worker_connection_properly(old_connection)
             await websocket.send(
                 json.dumps(
                     {"type": "registration_ack", "data": {"status": "registered"}}
@@ -203,7 +207,8 @@ class WorkerManager:
                 async with self.worker_lock:
                     if worker_id in self.workers:
                         del self.workers[worker_id]
-                bt.logging.info(f"🧹 Worker cleaned up | id={worker_id}")
+                self._vmgw_token_locks.pop(worker_id, None)
+                bt.logging.info(f"✅ Worker cleaned up | id={worker_id}")
 
     async def _handle_worker_messages(self, worker: WorkerConnection):
         try:
@@ -212,7 +217,7 @@ class WorkerManager:
                     data = json.loads(message)
                     message_type = data.get("type")
                     bt.logging.debug(
-                        f"📥 Worker message | type={message_type} id={worker.worker_id}"
+                        f"Worker message | type={message_type} id={worker.worker_id}"
                     )
                     if message_type == "heartbeat":
                         # Typed heartbeat validation
@@ -235,7 +240,7 @@ class WorkerManager:
                         await self._handle_task_result(worker, tr)
                     elif message_type == "proof_response":
                         bt.logging.debug(
-                            f"🧪 proof_response handler | id={worker.worker_id}"
+                            f"Proof response handler | id={worker.worker_id}"
                         )
                         try:
                             pr = ProofResponseMessage(**data)
@@ -245,9 +250,20 @@ class WorkerManager:
                             )
                             continue
                         await self._handle_proof_response(pr.model_dump())
+                    elif message_type == "vmgw_enroll_token_request":
+                        try:
+                            vmgw_req = VmgwEnrollTokenRequest(**data)
+                        except Exception as e:
+                            bt.logging.warning(
+                                f"⚠️ Invalid VMGW token request | id={worker.worker_id} error={e}"
+                            )
+                            continue
+                        asyncio.create_task(
+                            self._process_vmgw_token_request(worker, vmgw_req)
+                        )
                     else:
                         bt.logging.warning(
-                            f"❓ Unknown worker message | id={worker.worker_id} type={message_type}"
+                            f"⚠️ Unknown worker message | id={worker.worker_id} type={message_type}"
                         )
                 except json.JSONDecodeError as e:
                     bt.logging.warning(
@@ -259,7 +275,7 @@ class WorkerManager:
                     )
         except ConnectionClosed as e:
             bt.logging.info(
-                f"🔌 Worker connection closed | id={worker.worker_id} code={e.code} reason={e.reason}"
+                f"Worker connection closed | id={worker.worker_id} code={e.code} reason={e.reason}"
             )
         except WebSocketException as e:
             bt.logging.warning(f"⚠️ WebSocket error | id={worker.worker_id} error={e}")
@@ -272,14 +288,89 @@ class WorkerManager:
         message_id = data.get("message_id")
         bt.logging.debug(f"Proof response | message_id={message_id}")
         if message_id and message_id in self._pending_proof_requests:
-            bt.logging.debug(
-                f"🧪 Proof response future | found message_id={message_id}"
-            )
+            bt.logging.debug(f"Proof response future | found message_id={message_id}")
             future = self._pending_proof_requests.pop(message_id)
             future.set_result(data.get("data"))
             bt.logging.debug(f"Proof response future set | message_id={message_id}")
         else:
             bt.logging.warning(f"⚠️ Missing proof future | message_id={message_id}")
+
+    async def _process_vmgw_token_request(
+        self, worker: WorkerConnection, request: VmgwEnrollTokenRequest
+    ) -> None:
+        if not self.communication_service:
+            await self._send_vmgw_token_response(
+                worker,
+                {
+                    "code": 1003,
+                    "error": "communication service unavailable",
+                },
+            )
+            return
+
+        lock = self._vmgw_token_locks.setdefault(worker.worker_id, asyncio.Lock())
+        if lock.locked():
+            await self._send_vmgw_token_response(
+                worker,
+                {
+                    "code": 1001,
+                    "error": "token request already in progress",
+                },
+            )
+            return
+
+        async with lock:
+            if request.data.worker_id != worker.worker_id:
+                await self._send_vmgw_token_response(
+                    worker,
+                    {
+                        "code": 1002,
+                        "error": "worker_id mismatch",
+                    },
+                )
+                return
+
+            try:
+                token_bundle = (
+                    await self.communication_service.acquire_vmgw_enroll_token(
+                        worker.worker_id
+                    )
+                )
+                await self._send_vmgw_token_response(
+                    worker,
+                    {
+                        "code": 0,
+                        "token": token_bundle.get("token"),
+                        "expires_at": token_bundle.get("expires_at"),
+                        "enrollment_url": token_bundle.get("enrollment_url"),
+                    },
+                )
+                bt.logging.info(f"✅ VMGW token issued | worker={worker.worker_id}")
+            except Exception as e:
+                bt.logging.error(
+                    f"❌ VMGW token fetch failed | worker={worker.worker_id} err={e}"
+                )
+                await self._send_vmgw_token_response(
+                    worker,
+                    {
+                        "code": 1003,
+                        "error": str(e),
+                    },
+                )
+
+    async def _send_vmgw_token_response(
+        self, worker: WorkerConnection, payload: Dict[str, Any]
+    ) -> None:
+        response = {
+            "type": "vmgw_enroll_token_response",
+            "data": payload,
+        }
+        try:
+            await worker.websocket.send(json.dumps(response))
+        except Exception as e:
+            bt.logging.error(
+                f"❌ VMGW token response send failed | worker={worker.worker_id} error={e}"
+            )
 
     async def _handle_heartbeat(self, worker: WorkerConnection, data: Dict[str, Any]):
         worker.last_heartbeat = time.time()
@@ -342,26 +433,26 @@ class WorkerManager:
         while self.is_running:
             try:
                 await asyncio.sleep(self.heartbeat_interval)
+                # Identify and detach stale workers under lock
+                stale_items = []  # List[Tuple[str, WorkerConnection]]
                 async with self.worker_lock:
-                    stale_workers = [
-                        worker_id
-                        for worker_id, worker in self.workers.items()
-                        if time.time() - worker.last_heartbeat > self.heartbeat_timeout
-                    ]
-                    for worker_id in stale_workers:
-                        bt.logging.warning(
-                            f"⏳ Worker heartbeat timeout | id={worker_id} action=remove"
-                        )
-                        try:
-                            await self._close_worker_connection_properly(
-                                self.workers[worker_id]
-                            )
-                        except Exception as e:
-                            bt.logging.error(
-                                f"❌ Worker close error | id={worker_id} error={e}"
-                            )
-                        finally:
+                    for worker_id, worker in list(self.workers.items()):
+                        if time.time() - worker.last_heartbeat > self.heartbeat_timeout:
+                            stale_items.append((worker_id, worker))
+                            # Detach immediately so others won't see it
                             self.workers.pop(worker_id, None)
+
+                # Close connections outside the lock to avoid blocking other operations
+                for worker_id, worker in stale_items:
+                    bt.logging.warning(
+                        f"⚠️ Worker heartbeat timeout | id={worker_id} action=remove"
+                    )
+                    try:
+                        await self._close_worker_connection_properly(worker)
+                    except Exception as e:
+                        bt.logging.error(
+                            f"❌ Worker close error | id={worker_id} error={e}"
+                        )
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -371,28 +462,35 @@ class WorkerManager:
     async def distribute_task_to_worker(
         self, task_data: Dict[str, Any], worker_id: str
     ) -> bool:
+        # Reserve the worker (mark busy) under lock, then send outside the lock
+        task_id = task_data.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            return False
+
         async with self.worker_lock:
             worker = self.workers.get(worker_id)
             if not worker or worker.status != "online":
                 return False
-            try:
-                await worker.websocket.send(
-                    json.dumps({"type": "task_assignment", "data": task_data})
-                )
-                worker.current_tasks.add(task_data["task_id"])
-                worker.status = "busy"
-                return True
-            except WebSocketException as e:
-                bt.logging.error(
-                    f"❌ Send task error | worker_id={worker_id} error={e}"
-                )
-                return False
+            # Reserve this worker for the task
+            worker.current_tasks.add(task_id)
+            worker.status = "busy"
+            websocket = worker.websocket
 
-    def has_active_workers(self) -> bool:
-        """Check if there are any active workers connected"""
-        return len(self.workers) > 0 and any(
-            worker.status == "online" for worker in self.workers.values()
-        )
+        # Perform network I/O without holding the global lock
+        try:
+            await websocket.send(
+                json.dumps({"type": "task_assignment", "data": task_data})
+            )
+            return True
+        except WebSocketException as e:
+            bt.logging.error(f"❌ Send task error | worker_id={worker_id} error={e}")
+            # Roll back reservation on failure
+            async with self.worker_lock:
+                worker = self.workers.get(worker_id)
+                if worker and task_id in worker.current_tasks:
+                    worker.current_tasks.remove(task_id)
+                    worker.status = "online" if not worker.current_tasks else "busy"
+            return False
 
     def get_idle_worker_percentage(self) -> float:
         """Get percentage of workers that are idle (online)"""
@@ -404,32 +502,47 @@ class WorkerManager:
         )
         return (online_workers / len(self.workers)) * 100.0
 
-    def has_sufficient_idle_workers(self, threshold_percentage: float) -> bool:
-        """Check if sufficient percentage of workers are idle"""
-        return self.get_idle_worker_percentage() >= threshold_percentage
-
     def get_connected_workers(self) -> List[str]:
         """Get list of connected worker IDs"""
         return list(self.workers.keys())
 
     async def distribute_task_to_idle_worker(self, task_data: Dict[str, Any]) -> bool:
         """Distribute task to any available idle worker"""
-        async with self.worker_lock:
-            for worker_id, worker in self.workers.items():
-                if worker.status == "online":
-                    return await self.distribute_task_to_worker(task_data, worker_id)
-        return False
+        task_id = task_data.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            return False
 
-    async def distribute_task_to_all(self, task_data: Dict[str, Any]) -> int:
-        """Distribute task to all available workers, return number of successful distributions"""
-        success_count = 0
+        # Select and reserve an idle worker under the lock
         async with self.worker_lock:
-            for worker_id, worker in self.workers.items():
+            selected_id = None
+            websocket = None
+            for wid, worker in self.workers.items():
                 if worker.status == "online":
-                    success = await self.distribute_task_to_worker(task_data, worker_id)
-                    if success:
-                        success_count += 1
-        return success_count
+                    selected_id = wid
+                    worker.current_tasks.add(task_id)
+                    worker.status = "busy"
+                    websocket = worker.websocket
+                    break
+
+        if not selected_id or not websocket:
+            return False
+
+        # Send outside the lock; roll back reservation on failure
+        try:
+            await websocket.send(
+                json.dumps({"type": "task_assignment", "data": task_data})
+            )
+            return True
+        except WebSocketException as e:
+            bt.logging.error(f"❌ Send task error | worker_id={selected_id} error={e}")
+            async with self.worker_lock:
+                worker = self.workers.get(selected_id)
+                if worker and task_id in worker.current_tasks:
+                    worker.current_tasks.remove(task_id)
+                    worker.status = "online" if not worker.current_tasks else "busy"
+            return False
+
+    # Note: broadcast distribution to all workers has been removed to avoid misuse.
 
     def get_status(self) -> Dict[str, Any]:
         """Get worker manager status information"""
@@ -486,12 +599,12 @@ class WorkerManager:
         try:
             await worker.websocket.send(json.dumps(proof_request_message))
             bt.logging.info(
-                f"📨 Proof request sent | id={message_id} worker_id={worker_id}"
+                f"✅ Proof request sent | id={message_id} worker_id={worker_id}"
             )
             return await asyncio.wait_for(future, timeout=30.0)
         except asyncio.TimeoutError:
             bt.logging.error(
-                f"⏳ Proof response timeout | id={message_id} worker_id={worker_id}"
+                f"⚠️ Proof response timeout | id={message_id} worker_id={worker_id}"
             )
             return None
         except Exception as e:

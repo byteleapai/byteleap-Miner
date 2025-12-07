@@ -6,12 +6,9 @@ Simple wrapper that caches filtered validators and manages their connectivity st
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import bittensor as bt
-
-if TYPE_CHECKING:
-    from neurons.shared.config.config_manager import ConfigManager
 
 
 class ValidatorCache:
@@ -71,7 +68,8 @@ class ValidatorCache:
         # Blacklist management
         self._blacklisted_validators: Dict[str, float] = {}
         self._validator_failure_count: Dict[str, int] = {}
-        self._validator_success_count: Dict[str, int] = {}
+        # Track last failure timestamp per endpoint to enable TTL-based cleanup of failure counters
+        self._validator_failure_last_ts: Dict[str, float] = {}
 
         # Background tasks
         self._sync_task: Optional[asyncio.Task] = None
@@ -141,7 +139,7 @@ class ValidatorCache:
                 )
 
             # Only sync the existing metagraph instance
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None, lambda: self._metagraph.sync(subtensor=self.subtensor)
             )
@@ -280,7 +278,7 @@ class ValidatorCache:
             permit_qualified_count += 1
 
         bt.logging.info(
-            f"📈 Validator selection: {len(valid_validators)} total "
+            f"Validator selection: {len(valid_validators)} total "
             f"({whitelisted_count} whitelisted, {permit_qualified_count} permit-qualified, "
             f"{permit_rejected_count} permit-stake-rejected, "
             f"{blacklisted_count} blacklisted, {invalid_address_count} invalid-address) "
@@ -302,14 +300,12 @@ class ValidatorCache:
         if cache_key not in self._blacklisted_validators:
             return False
 
-        # Check if entry has expired
-        blacklist_time = self._blacklisted_validators[cache_key]
+        # TTL check without deletion; actual cleanup done in periodic task
+        blacklist_time = self._blacklisted_validators.get(cache_key)
+        if blacklist_time is None:
+            return False
+
         if time.time() - blacklist_time > self.blacklist_ttl_seconds:
-            # Entry expired, remove it
-            del self._blacklisted_validators[cache_key]
-            self._validator_failure_count.pop(cache_key, None)
-            self._validator_success_count.pop(cache_key, None)
-            bt.logging.debug(f"Blacklist entry expired | key={cache_key}")
             return False
 
         return True
@@ -324,14 +320,16 @@ class ValidatorCache:
             port: Validator port
         """
         cache_key = f"{ip}:{port}"
+        now = time.time()
 
         self._validator_failure_count[cache_key] = (
             self._validator_failure_count.get(cache_key, 0) + 1
         )
+        self._validator_failure_last_ts[cache_key] = now
 
         # Debug logging to track failure accumulation
         bt.logging.debug(
-            f"📉 Validator {cache_key} failure count: {self._validator_failure_count[cache_key]}/{self.blacklist_threshold}"
+            f"Validator {cache_key} failure count: {self._validator_failure_count[cache_key]}/{self.blacklist_threshold}"
         )
 
         # Add to blacklist on threshold reached
@@ -339,9 +337,9 @@ class ValidatorCache:
             cache_key not in self._blacklisted_validators
             and self._validator_failure_count[cache_key] >= self.blacklist_threshold
         ):
-            self._blacklisted_validators[cache_key] = time.time()
+            self._blacklisted_validators[cache_key] = now
             bt.logging.warning(
-                f"⚫ Validator {cache_key} blacklisted after {self.blacklist_threshold} failures"
+                f"⚠️ Validator {cache_key} blacklisted after {self.blacklist_threshold} failures"
             )
 
     def record_communication_success(self, ip: str, port: int) -> None:
@@ -354,36 +352,45 @@ class ValidatorCache:
         """
         cache_key = f"{ip}:{port}"
 
-        # Reset failure count
-        self._validator_failure_count[cache_key] = 0
+        # Reset failure state
+        self._validator_failure_count.pop(cache_key, None)
+        self._validator_failure_last_ts.pop(cache_key, None)
 
         # If was blacklisted, remove it on successful communication
         if cache_key in self._blacklisted_validators:
-            del self._blacklisted_validators[cache_key]
-            self._validator_success_count.pop(cache_key, None)
+            self._blacklisted_validators.pop(cache_key, None)
             bt.logging.info(f"✅ Validator {cache_key} removed from blacklist")
 
     def _cleanup_expired_blacklist_entries(self) -> None:
-        """Clean up expired blacklist entries based on TTL"""
-        if not self._blacklisted_validators:
-            return
-
+        """Clean up expired blacklist entries and stale failure counters based on TTL"""
         current_time = time.time()
-        expired_keys = []
 
-        for cache_key, timestamp in self._blacklisted_validators.items():
-            if current_time - timestamp > self.blacklist_ttl_seconds:
-                expired_keys.append(cache_key)
-
-        # Remove expired entries
+        # Blacklist TTL cleanup
+        expired_keys = [
+            k
+            for k, ts in self._blacklisted_validators.items()
+            if current_time - ts > self.blacklist_ttl_seconds
+        ]
         for key in expired_keys:
-            del self._blacklisted_validators[key]
+            self._blacklisted_validators.pop(key, None)
             self._validator_failure_count.pop(key, None)
-            self._validator_success_count.pop(key, None)
+            self._validator_failure_last_ts.pop(key, None)
 
-        if expired_keys:
+        # Failure counters TTL cleanup (no blacklist entry, last failure too old)
+        stale_failure_keys = [
+            k
+            for k, ts in self._validator_failure_last_ts.items()
+            if k not in self._blacklisted_validators
+            and current_time - ts > self.blacklist_ttl_seconds
+        ]
+        for key in stale_failure_keys:
+            self._validator_failure_count.pop(key, None)
+            self._validator_failure_last_ts.pop(key, None)
+
+        total_cleaned = len(expired_keys) + len(stale_failure_keys)
+        if total_cleaned > 0:
             bt.logging.debug(
-                f"🧹 Cleaned up {len(expired_keys)} expired blacklist entries"
+                f"Cleaned up {len(expired_keys)} expired blacklist entries, {len(stale_failure_keys)} stale failure counters"
             )
 
     def get_blacklist_status(self) -> Dict[str, Dict]:
@@ -391,6 +398,5 @@ class ValidatorCache:
         return {
             "blacklisted_validators": dict(self._blacklisted_validators),
             "failure_counts": dict(self._validator_failure_count),
-            "success_counts": dict(self._validator_success_count),
             "cache_size": len(self._cached_validators),
         }

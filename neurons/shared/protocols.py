@@ -44,6 +44,7 @@ class ProtocolTypes:
     CHALLENGE = "CHALLENGE_V1"
     CHALLENGE_PROOF = "CHALLENGE_PROOF_V1"
     SESSION_INIT = "SESSION_INIT_V1"
+    GET_VMGW_ENROLL_TOKEN = "GET_VMGW_ENROLL_TOKEN_V1"
 
 
 # Error codes
@@ -260,6 +261,34 @@ class TaskSynapse(EncryptedSynapse):
     """Task pulling protocol with mandatory encryption"""
 
     PROTOCOL_TYPE: ClassVar[str] = ProtocolTypes.TASK
+
+
+class GetVmgwEnrollTokenSynapse(EncryptedSynapse):
+    """Miner ↔ Validator protocol for VM gateway enrollment tokens."""
+
+    PROTOCOL_TYPE: ClassVar[str] = ProtocolTypes.GET_VMGW_ENROLL_TOKEN
+
+    worker_id: str = Field(
+        default="",
+        description="Worker identifier requesting the token (validators may echo back)",
+    )
+    code: int = Field(default=0, description="Response code: 0 success, >0 error")
+    try_again_in_sec: Optional[int] = Field(
+        default=None, description="Suggested retry delay when token pending"
+    )
+    token: Optional[str] = Field(
+        default=None,
+        description="JWT enrollment token (None indicates pending issuance)",
+    )
+    expires_at: Optional[str] = Field(
+        default=None, description="Token expiry timestamp (ISO-8601 UTC)"
+    )
+    enrollment_url: Optional[str] = Field(
+        default=None, description="Enrollment endpoint URL"
+    )
+    error_message: Optional[str] = Field(
+        default=None, description="Error description when code != 0"
+    )
 
 
 def _is_hex(s: str) -> bool:
@@ -539,6 +568,7 @@ ProtocolRegistry.register(TaskSynapse)
 ProtocolRegistry.register(ChallengeSynapse)
 ProtocolRegistry.register(ChallengeProofSynapse)
 ProtocolRegistry.register(SessionInitSynapse)
+ProtocolRegistry.register(GetVmgwEnrollTokenSynapse)
 
 __all__ = [
     # constants and codes
@@ -565,6 +595,7 @@ __all__ = [
     "ChallengeSynapse",
     "ChallengeProofSynapse",
     "SessionInitSynapse",
+    "GetVmgwEnrollTokenSynapse",
     "ProtocolRegistry",
     # session
     "SessionInitRequest",

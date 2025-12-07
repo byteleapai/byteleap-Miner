@@ -48,7 +48,7 @@ async def main():
 
     # The WorkerService will set up its own detailed logging based on the config file.
     # We just need a basic logger here for pre-startup messages.
-    logger.debug(f"🧾 Load config | path={config_file}")
+    logger.debug(f"Load config | path={config_file}")
 
     worker = None
     try:
@@ -57,7 +57,7 @@ async def main():
         await worker.start()
 
     except KeyboardInterrupt:
-        logger.info("⏹️ Interrupt | shutting down")
+        logger.info("Interrupt | shutting down")
     except Exception as e:
         logger.error(f"❌ Runtime error | error={e}", exc_info=True)
         sys.exit(1)

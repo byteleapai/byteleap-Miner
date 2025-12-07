@@ -52,10 +52,17 @@ class GPUServerClient:
         """
         self.config = config
         # GPU server binary configuration from config
-        self.gpu_binary_path = config.get("gpu.binary_path")
-        self.socket_path = config.get("gpu.socket_path")
         self.enable_gpu = config.get("gpu.enable")
         self.auto_start = config.get("gpu.auto_start")
+
+        # Validate required paths only if GPU is enabled
+        if self.enable_gpu:
+            self.gpu_binary_path = config.get_non_empty_string("gpu.binary_path")
+            self.socket_path = config.get_non_empty_string("gpu.socket_path")
+        else:
+            # Use optional access for disabled GPU
+            self.gpu_binary_path = config.get_optional("gpu.binary_path", "")
+            self.socket_path = config.get_optional("gpu.socket_path", "")
 
         # Runtime state
         self.gpu_process: Optional[subprocess.Popen] = None
@@ -67,7 +74,7 @@ class GPUServerClient:
         self.gpu_info: Optional[Dict[str, Any]] = None
         self.gpu_uuids: List[str] = []
 
-        logger.debug(f"🧮 GPU client init | binary={self.gpu_binary_path}")
+        logger.debug(f"GPU client init | binary={self.gpu_binary_path}")
 
     def _resolve_binary_path(self, binary_path: str) -> Path:
         """
@@ -169,8 +176,8 @@ class GPUServerClient:
                 self.gpu_process = subprocess.Popen(
                     cmd,
                     cwd=str("/tmp"),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                     preexec_fn=os.setsid,  # Create new process group
                 )
 
@@ -215,7 +222,7 @@ class GPUServerClient:
         with self.connection_lock:
             self._cleanup_gpu_process()
             self.is_connected = False
-            logger.info("⏹️ GPU server stopped")
+            logger.info("GPU server stopped")
 
     def connect(self) -> bool:
         """
@@ -238,7 +245,7 @@ class GPUServerClient:
             return self.start_gpu_server()
 
         # If auto_start disabled, still attempt to reconnect to externally started server
-        logger.debug("⚠️ GPU not running | auto_start=disabled | retry_on_next")
+        logger.debug("GPU not running | auto_start=disabled | retry_on_next")
         self.is_connected = False
         return False
 
@@ -330,7 +337,7 @@ class GPUServerClient:
                 },
             }
 
-            logger.info(f"📤 GPU challenge | size={request['task']['matrix_size']}")
+            logger.info(f"GPU challenge | size={request['task']['matrix_size']}")
 
             response = self._send_command(
                 request, timeout=timeout or self.COMMAND_TIMEOUT
@@ -389,7 +396,7 @@ class GPUServerClient:
             row_queries = rows or []
 
             logger.debug(
-                f"🔎 GPU query | coords={len(coord_queries)} rows={len(row_queries)} uuid={gpu_uuid}"
+                f"GPU query | coords={len(coord_queries)} rows={len(row_queries)} uuid={gpu_uuid}"
             )
 
             all_values = []
@@ -691,7 +698,7 @@ class GPUServerClient:
         """Handle communication error with server"""
         self.is_connected = False
         logger.debug(
-            f"⚠️ GPU comm error | retry_next auto_start={'enabled' if self.auto_start else 'disabled'}"
+            f"GPU comm error | retry_next auto_start={'enabled' if self.auto_start else 'disabled'}"
         )
 
     def get_gpu_uuids(self) -> List[str]:

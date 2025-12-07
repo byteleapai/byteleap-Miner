@@ -16,10 +16,29 @@ from neurons.shared.protocols import CommunicationResult, ErrorCodes
 class SessionTransport:
     """Encapsulates session-based encrypted communication to validators."""
 
-    def __init__(self, wallet: bt.wallet, session_cache, session_crypto):
+    def __init__(
+        self, wallet: bt.wallet, session_cache, session_crypto, validator_cache=None
+    ):
         self.wallet = wallet
         self.session_cache = session_cache
         self.session_crypto = session_crypto
+        self.validator_cache = validator_cache
+
+    def _record_result(self, axon: bt.AxonInfo, success: bool) -> None:
+        try:
+            if not self.validator_cache or not hasattr(axon, "ip"):
+                return
+            ip = getattr(axon, "ip", None)
+            port = getattr(axon, "port", None)
+            if not ip or port is None:
+                return
+            if success:
+                self.validator_cache.record_communication_success(ip, int(port))
+            else:
+                self.validator_cache.record_communication_failure(ip, int(port))
+        except Exception:
+            # Do not let metrics recording affect network flow
+            pass
 
     async def send_to_validators(
         self,
@@ -56,7 +75,7 @@ class SessionTransport:
                 error_message="No reachable validators",
             )
 
-        bt.logging.debug(f"📤 Sending {operation} | validators={len(safe_validators)}")
+        bt.logging.debug(f"Sending {operation} | validators={len(safe_validators)}")
 
         tasks = []
         for uid, axon, validator_hotkey in safe_validators:
@@ -93,11 +112,7 @@ class SessionTransport:
                     "success_count": success_count,
                     "total_count": len(safe_validators),
                 },
-                processing_time_ms=(
-                    total_processing_time / len(safe_validators)
-                    if len(safe_validators) > 0
-                    else 0.0
-                ),
+                processing_time_ms=total_processing_time,
             )
         return CommunicationResult(
             success=False,
@@ -134,12 +149,14 @@ class SessionTransport:
                 bt.logging.error(
                     f"Session establishment failed for {target_hotkey}: {session_error}"
                 )
-                return CommunicationResult(
+                result = CommunicationResult(
                     success=False,
                     error_code=ErrorCodes.SESSION_REQUIRED,
                     error_message=f"Session required: {session_error}",
                     processing_time_ms=(time.time() - start_time) * 1000,
                 )
+                self._record_result(axon, False)
+                return result
 
             seq = session_state.get_next_seq()
             encrypted_request = self.session_crypto.encrypt_with_session(
@@ -200,7 +217,7 @@ class SessionTransport:
                         ]
                         if error_code in session_errors and _retry_count == 0:
                             bt.logging.warning(
-                                f"🔄 Session error from {target_hotkey}, invalidating and retrying"
+                                f"⚠️ Session error from {target_hotkey}, invalidating and retrying"
                             )
                             if error_code == ErrorCodes.SEQUENCE_ERROR:
                                 self.session_cache.invalidate_session(
@@ -220,13 +237,15 @@ class SessionTransport:
                                 validator_uid,
                                 _retry_count=1,
                             )
-                        return CommunicationResult(
+                        result = CommunicationResult(
                             success=False,
                             error_code=error_code,
                             error_message=f"Session error: {error_msg}"
                             + (" (retry failed)" if _retry_count > 0 else ""),
                             processing_time_ms=processing_time,
                         )
+                        self._record_result(axon, False)
+                        return result
                 except (json.JSONDecodeError, KeyError, TypeError):
                     pass
 
@@ -252,7 +271,7 @@ class SessionTransport:
                         response_seq, "validator"
                     ):
                         bt.logging.warning(
-                            f"🔄 Invalid incoming sequence from {target_hotkey}, invalidating session"
+                            f"⚠️ Invalid incoming sequence from {target_hotkey}, invalidating session"
                         )
                         self.session_cache.invalidate_session(
                             target_hotkey, "invalid_incoming_sequence"
@@ -268,15 +287,16 @@ class SessionTransport:
                                 validator_uid,
                                 _retry_count=1,
                             )
-                        return CommunicationResult(
+                        result = CommunicationResult(
                             success=False,
                             error_code=ErrorCodes.SEQUENCE_ERROR,
                             error_message=f"Invalid incoming sequence: {response_seq}"
                             + (" (retry failed)" if _retry_count > 0 else ""),
                             processing_time_ms=processing_time,
                         )
+                        self._record_result(axon, False)
+                        return result
 
-                    bt.logging.debug("Session response decrypted")
                 except Exception as e:
                     bt.logging.error(
                         f"❌ Session response decrypt error | from={target_hotkey} error={e}"
@@ -285,29 +305,35 @@ class SessionTransport:
                         self.session_cache.invalidate_session(
                             target_hotkey, "decryption_failed"
                         )
-                    return CommunicationResult(
+                    result = CommunicationResult(
                         success=False,
                         error_code=ErrorCodes.BAD_AAD,
                         error_message=f"Session response decryption failed: {str(e)}",
                         processing_time_ms=processing_time,
                     )
+                    self._record_result(axon, False)
+                    return result
 
             else:
                 response_data = None
 
             if response_data is None:
-                return CommunicationResult(
+                result = CommunicationResult(
                     success=False,
                     error_code=ErrorCodes.INVALID_RESPONSE,
                     error_message="Empty or invalid response",
                     processing_time_ms=processing_time,
                 )
+                self._record_result(axon, False)
+                return result
 
-            return CommunicationResult(
+            result = CommunicationResult(
                 success=True,
                 data=response_data,
                 processing_time_ms=processing_time,
             )
+            self._record_result(axon, True)
+            return result
 
         except Exception as e:
             processing_time = (time.time() - start_time) * 1000
@@ -315,9 +341,11 @@ class SessionTransport:
                 f"❌ Session request error | target={target_hotkey} error={e}"
             )
             self.session_cache.invalidate_session(target_hotkey)
-            return CommunicationResult(
+            result = CommunicationResult(
                 success=False,
                 error_code=ErrorCodes.HANDSHAKE_FAILED,
                 error_message=f"Session request failed: {str(e)}",
                 processing_time_ms=processing_time,
             )
+            self._record_result(axon, False)
+            return result

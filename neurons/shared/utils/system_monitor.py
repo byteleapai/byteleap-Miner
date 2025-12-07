@@ -43,6 +43,10 @@ class EnhancedSystemMonitor:
                 self._nvml_initialized = False
         else:
             self._nvml_initialized = False
+        # Public IP cache
+        self._public_ip_cache: Optional[str] = None
+        self._public_ip_cache_time: float = 0.0
+        self._public_ip_ttl_seconds: int = 3600
 
     def get_system_info(self) -> Dict[str, Any]:
         return {
@@ -571,16 +575,31 @@ class EnhancedSystemMonitor:
             return None
 
     def get_public_ip(self) -> Optional[str]:
+        # Serve cached value if fresh
+        now = time.time()
+        if (
+            self._public_ip_cache is not None
+            and (now - self._public_ip_cache_time) < self._public_ip_ttl_seconds
+        ):
+            return self._public_ip_cache
+
+        # Refresh from network with fallback
+        ip_val: Optional[str] = None
         try:
             response = requests.get("https://httpbin.org/ip", timeout=5)
             if response.status_code == 200:
-                return response.json().get("origin")
+                ip_val = response.json().get("origin")
         except Exception:
-            pass
-        try:
-            response = requests.get("https://api.ipify.org?format=json", timeout=5)
-            if response.status_code == 200:
-                return response.json().get("ip")
-        except Exception:
-            pass
-        return None
+            ip_val = None
+        if not ip_val:
+            try:
+                response = requests.get("https://api.ipify.org?format=json", timeout=5)
+                if response.status_code == 200:
+                    ip_val = response.json().get("ip")
+            except Exception:
+                ip_val = None
+
+        # Update cache (even None to throttle retries)
+        self._public_ip_cache = ip_val
+        self._public_ip_cache_time = now
+        return ip_val

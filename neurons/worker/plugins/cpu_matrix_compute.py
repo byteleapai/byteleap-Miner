@@ -18,8 +18,16 @@ class CPUMatrixComputePlugin:
     def __init__(self):
         """Initialize CPU matrix computation plugin"""
         self.plugin_name = "cpu_matrix_compute"
-        self.cpu_cores = cpu_count()
-        logger.info(f"🧮 CPU plugin initialized | cores={self.cpu_cores}")
+
+        # Validate CPU count (can be None if indeterminable)
+        detected_cores = cpu_count()
+        if detected_cores is None or detected_cores <= 0:
+            logger.warning("⚠️ CPU count detection failed, using fallback value 1")
+            self.cpu_cores = 1
+        else:
+            self.cpu_cores = detected_cores
+
+        logger.info(f"🚀 CPU plugin initialized | cores={self.cpu_cores}")
 
     def can_handle_task(self, task_type: str) -> bool:
         """Check if this plugin can handle the given task type"""
@@ -36,8 +44,8 @@ class CPUMatrixComputePlugin:
             A dictionary containing the result and cacheable data.
         """
         try:
-            logger.info("🧮 CPU challenge start")
-            logger.debug(f"🧮 Task data | {task_data}")
+            logger.info("CPU challenge start")
+            logger.debug(f"Task data | {task_data}")
 
             if "data" not in task_data:
                 raise ValueError("Missing challenge data in task")
@@ -106,7 +114,7 @@ class CPUMatrixComputePlugin:
         # Run the synchronous execute_task in a thread pool
         import asyncio
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.execute_task, task_data)
 
     def get_performance_info(self) -> Dict[str, Any]:

@@ -43,12 +43,12 @@ class WebSocketClient:
         # Background tasks
         self._message_task: Optional[asyncio.Task] = None
 
-        logger.info(f"🌐 WebSocket client initialized | url={self.miner_url}")
+        logger.info(f"WebSocket client initialized | url={self.miner_url}")
 
     async def connect(self):
         """Connect to miner WebSocket server"""
         try:
-            logger.info(f"🔌 Connecting | url={self.miner_url}")
+            logger.info(f"Connecting | url={self.miner_url}")
 
             # Establish WebSocket connection
             self.websocket = await websockets.connect(
@@ -85,7 +85,7 @@ class WebSocketClient:
             await self.websocket.close()
             self.websocket = None
 
-        logger.info("⏹️ Disconnected")
+        logger.info("Disconnected")
 
     async def send_message(self, message: Dict[str, Any]):
         """Send message to miner"""
@@ -97,7 +97,7 @@ class WebSocketClient:
             message_json = json.dumps(message)
             await self.websocket.send(message_json)
 
-            logger.debug(f"📤 Sent | type={message.get('type', 'unknown')}")
+            logger.debug(f"Sent | type={message.get('type', 'unknown')}")
 
         except Exception as e:
             logger.error(f"Error sending message: {e}")
@@ -116,7 +116,7 @@ class WebSocketClient:
             await asyncio.wait_for(event.wait(), timeout=timeout)
             return self.received_messages.get(message_type)
         except asyncio.TimeoutError:
-            logger.warning(f"⏳ Wait timeout | type={message_type}")
+            logger.warning(f"⚠️ Wait timeout | type={message_type}")
             return None
         finally:
             self.pending_responses.pop(message_type, None)
@@ -125,7 +125,7 @@ class WebSocketClient:
     def set_message_handler(self, message_type: str, handler: Callable):
         """Set handler for specific message type"""
         self.message_handlers[message_type] = handler
-        logger.info(f"🧩 Handler set | type={message_type}")
+        logger.info(f"Handler set | type={message_type}")
 
     async def process_messages(self):
         """Process any pending messages (non-blocking)"""
@@ -145,7 +145,7 @@ class WebSocketClient:
                         logger.warning("⚠️ Message missing type")
                         continue
 
-                    logger.debug(f"📥 Received | type={message_type}")
+                    logger.debug(f"Received | type={message_type}")
 
                     # Fulfill waiter for this exact message type
                     event = self.pending_responses.get(message_type)
@@ -173,10 +173,10 @@ class WebSocketClient:
                     )
 
         except ConnectionClosed as e:
-            logger.warning(f"🔌 Connection closed | code={e.code} reason={e.reason}")
+            logger.warning(f"⚠️ Connection closed | code={e.code} reason={e.reason}")
             self.is_connected_flag = False
         except (ConnectionError, TimeoutError) as e:
-            logger.warning(f"🌐 Network error | error={e}")
+            logger.warning(f"⚠️ Network error | error={e}")
             self.is_connected_flag = False
         except Exception as e:
             logger.error(f"❌ Message loop error | error={e}", exc_info=True)
@@ -185,20 +185,6 @@ class WebSocketClient:
     def is_connected(self) -> bool:
         """Check if connected to miner"""
         return self.is_connected_flag and self.websocket is not None
-
-    async def ping(self) -> bool:
-        """Send ping to check connection"""
-        if not self.is_connected():
-            return False
-
-        try:
-            pong_waiter = await self.websocket.ping()
-            await asyncio.wait_for(pong_waiter, timeout=10)
-            return True
-        except Exception as e:
-            logger.warning(f"🏓 Ping failed | error={e}")
-            self.is_connected_flag = False
-            return False
 
     def get_connection_info(self) -> Dict[str, Any]:
         """Get connection information"""

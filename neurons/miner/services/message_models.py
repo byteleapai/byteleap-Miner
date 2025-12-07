@@ -57,3 +57,25 @@ class ProofResponseMessage(StrictModel):
     type: Literal["proof_response"]
     message_id: str
     data: ProofResponseData
+
+
+class VmgwEnrollTokenRequestData(StrictModel):
+    worker_id: str
+
+
+class VmgwEnrollTokenRequest(StrictModel):
+    type: Literal["vmgw_enroll_token_request"]
+    data: VmgwEnrollTokenRequestData
+
+
+class VmgwEnrollTokenResponseData(StrictModel):
+    code: int
+    error: Optional[str] = None
+    token: Optional[str] = None
+    expires_at: Optional[str] = None
+    enrollment_url: Optional[str] = None
+
+
+class VmgwEnrollTokenResponse(StrictModel):
+    type: Literal["vmgw_enroll_token_response"]
+    data: VmgwEnrollTokenResponseData

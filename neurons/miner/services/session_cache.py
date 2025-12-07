@@ -65,7 +65,7 @@ class SessionCache:
         self._in_flight_handshakes: Dict[str, asyncio.Future] = {}
 
         bt.logging.info(
-            f"🧭 Session cache initialized | ttl={CryptoManager.SESSION_TTL_SECONDS}s, near_expiry={CryptoManager.NEAR_EXPIRY_THRESHOLD_SECONDS}s"
+            f"🚀 Session cache initialized | ttl={CryptoManager.SESSION_TTL_SECONDS}s, near_expiry={CryptoManager.NEAR_EXPIRY_THRESHOLD_SECONDS}s"
         )
 
     async def ensure_session(
@@ -112,8 +112,8 @@ class SessionCache:
 
             if validator_hotkey in self._in_flight_handshakes:
                 try:
-                    bt.logging.debug(
-                        f"⏳ Waiting for in-flight handshake | peer={validator_hotkey}"
+                    bt.logging.warning(
+                        f"⚠️ Waiting for in-flight handshake | peer={validator_hotkey}"
                     )
                     await asyncio.wait_for(
                         self._in_flight_handshakes[validator_hotkey],
@@ -314,7 +314,7 @@ class SessionCache:
         if validator_hotkey in self._sessions:
             session = self._sessions[validator_hotkey]
             bt.logging.info(
-                f"🔄 Session invalidated | id={session.session_id} peer={validator_hotkey} reason={reason}"
+                f"Session invalidated | id={session.session_id} peer={validator_hotkey} reason={reason}"
             )
             del self._sessions[validator_hotkey]
 
@@ -329,8 +329,15 @@ class SessionCache:
                 del self._in_flight_handshakes[validator_hotkey]
         else:
             bt.logging.debug(
-                f"ℹ️ No session to invalidate | peer={validator_hotkey} reason={reason}"
+                f"No session to invalidate | peer={validator_hotkey} reason={reason}"
             )
+
+        # Optional: clean up per-peer lock to avoid unbounded growth
+        if validator_hotkey in self._handshake_locks:
+            try:
+                self._handshake_locks.pop(validator_hotkey, None)
+            except Exception:
+                pass
 
     def cleanup_expired_sessions(self) -> int:
         """Clean up expired sessions"""

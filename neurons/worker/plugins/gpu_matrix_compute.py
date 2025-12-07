@@ -36,7 +36,7 @@ class GPUMatrixComputePlugin:
 
         if self.is_gpu_available():
             logger.info(
-                f"🧮 GPU plugin initialized | gpus={self.gpu_count} uuids={self.gpu_uuids}"
+                f"🚀 GPU plugin initialized | gpus={self.gpu_count} uuids={self.gpu_uuids}"
             )
         else:
             logger.warning("⚠️ GPU plugin initialized | gpus=0")
@@ -86,8 +86,8 @@ class GPUMatrixComputePlugin:
             A dictionary containing the result and cacheable data.
         """
         try:
-            logger.info("🧮 GPU challenge start")
-            logger.debug(f"🧮 Task data | {task_data}")
+            logger.info("GPU challenge start")
+            logger.debug(f"Task data | {task_data}")
 
             if "data" not in task_data:
                 raise ValueError("Missing challenge data in task")
@@ -231,7 +231,7 @@ class GPUMatrixComputePlugin:
                     self.gpu_details = gpu_info.get("gpu_details", [])
                     self.gpu_count = len(self.gpu_uuids)
                     self.last_gpu_info_update = time.time()
-                    logger.debug(f"🧮 GPU capabilities | gpus={self.gpu_count}")
+                    logger.debug(f"GPU capabilities | gpus={self.gpu_count}")
                 else:
                     self.gpu_count = 0
                     self.gpu_uuids = []
@@ -242,7 +242,7 @@ class GPUMatrixComputePlugin:
                 self.gpu_details = []
                 # Update timestamp even on connection failure
                 self.last_gpu_info_update = time.time()
-                logger.debug("⚠️ GPU connect failed | retry_on_refresh")
+                logger.debug("GPU connect failed | retry_on_refresh")
 
         except Exception as e:
             logger.warning(f"⚠️ GPU capabilities refresh error | error={e}")
@@ -257,7 +257,7 @@ class GPUMatrixComputePlugin:
         try:
             if self.gpu_client:
                 self.gpu_client.stop_gpu_server()
-                logger.debug("🧹 GPU plugin cleanup completed")
+                logger.debug("GPU plugin cleanup completed")
         except Exception as e:
             logger.warning(f"⚠️ GPU plugin cleanup error | error={e}")
 

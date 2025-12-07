@@ -65,12 +65,12 @@ def setup_logging(config: ConfigManager) -> None:
     # Get the root logger used by bittensor
     root_logger = logging.getLogger()
 
-    # Create rotating file handler - rotates at midnight and keeps 7 days
+    # Create rotating file handler - rotates at midnight and keeps 3 days
     file_handler = logging.handlers.TimedRotatingFileHandler(
         filename=log_filepath,
         when="midnight",
         interval=1,
-        backupCount=7,
+        backupCount=3,
         encoding="utf-8",
     )
 
@@ -102,7 +102,7 @@ def setup_logging(config: ConfigManager) -> None:
     websockets_logger.setLevel(logging.WARNING)
 
     bt.logging.info(
-        f"🧾 File logging | path={log_filepath} | level={log_level} | rotation=daily"
+        f"File logging | path={log_filepath} | level={log_level} | rotation=daily"
     )
 
 
@@ -161,7 +161,7 @@ def check_miner_registration(
     """Check if miner is registered on the subnet"""
     try:
         miner_hotkey = wallet.hotkey.ss58_address
-        bt.logging.info(f"🔎 Miner registration | hotkey={miner_hotkey}")
+        bt.logging.info(f"Miner registration | hotkey={miner_hotkey}")
 
         # Check if hotkey exists in metagraph
         if hasattr(metagraph, "hotkeys") and miner_hotkey in metagraph.hotkeys:
@@ -224,9 +224,9 @@ async def main():
     setup_logging(config)
 
     # Display configuration information
-    bt.logging.info(f"🌐 Netuid | id={config.get('netuid')}")
-    bt.logging.info(f"👛 Wallet | name={config.get('wallet.name')}")
-    bt.logging.info(f"🔑 Hotkey | name={config.get('wallet.hotkey')}")
+    bt.logging.info(f"Netuid | id={config.get('netuid')}")
+    bt.logging.info(f"Wallet | name={config.get('wallet.name')}")
+    bt.logging.info(f"Hotkey | name={config.get('wallet.hotkey')}")
 
     try:
         # Create Bittensor objects
@@ -250,7 +250,7 @@ async def main():
         await miner.run()
 
     except KeyboardInterrupt:
-        bt.logging.info("⏹️ Interrupt | shutting down")
+        bt.logging.info("Interrupt | shutting down")
     except Exception as e:
         bt.logging.error(f"❌ Runtime error | error={e}")
         sys.exit(1)

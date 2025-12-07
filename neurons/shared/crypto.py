@@ -43,7 +43,7 @@ class CryptoManager:
         self.wallet = wallet
         self.hotkey = wallet.hotkey.ss58_address
 
-        bt.logging.info(f"🔐 Crypto manager initialized | hotkey={self.hotkey}")
+        bt.logging.info(f"🚀 Crypto manager initialized | hotkey={self.hotkey}")
 
     def begin_handshake(self) -> Tuple[str, bytes]:
         """

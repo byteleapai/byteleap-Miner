@@ -9,13 +9,14 @@ from typing import Any, Dict, List, Optional
 import bittensor as bt
 
 from neurons.shared.protocols import HeartbeatData, SystemInfo
+from neurons.shared.utils.system_monitor import \
+    EnhancedSystemMonitor as SystemMonitor
 
 
 class HeartbeatService:
     def __init__(
         self,
         wallet: bt.wallet,
-        resource_aggregator,
         validator_cache,
         transport,
         heartbeat_cleanup_interval: int = 300,
@@ -24,10 +25,10 @@ class HeartbeatService:
         miner_version: Optional[str] = None,
     ) -> None:
         self.wallet = wallet
-        self.resource_aggregator = resource_aggregator
         self.validator_cache = validator_cache
         self.transport = transport
         self.miner_version = miner_version
+        self._system_monitor = SystemMonitor()
 
         self._pending_worker_heartbeats: List[Dict[str, Any]] = []
         self._last_heartbeat_cleanup: float = 0
@@ -112,8 +113,8 @@ class HeartbeatService:
 
             # Miner host info
             miner_info = None
-            miner_system = self.resource_aggregator.get_miner_system_info()
-            if miner_system:
+            try:
+                miner_system = self._system_monitor.get_system_info()
                 miner_info = SystemInfo(
                     cpu_count=miner_system.get("cpu_count", 0),
                     cpu_usage=miner_system.get("cpu_usage", 0.0),
@@ -132,6 +133,9 @@ class HeartbeatService:
                     storage_info=miner_system.get("storage_info"),
                     miner_version=self.miner_version,
                 )
+            except Exception as e:
+                bt.logging.error(f"❌ Miner system info error | error={e}")
+                miner_info = None
 
             for hb in items:
                 w = hb.get("worker_info", {})

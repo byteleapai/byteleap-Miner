@@ -4,7 +4,7 @@ Handles two-phase challenge processing: commitment and proof exchange.
 """
 
 import time
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
 import bittensor as bt
 
@@ -12,9 +12,15 @@ from neurons.shared.protocols import (Commitment, CommitmentData, ProofData,
                                       ProofRequest, ProofResponse,
                                       ProtocolRegistry, ProtocolTypes)
 
+if TYPE_CHECKING:
+    from neurons.miner.services.session_transport import SessionTransport
+    from neurons.miner.services.worker_manager import WorkerManager
+
 
 class ChallengePipeline:
-    def __init__(self, transport, worker_manager) -> None:
+    def __init__(
+        self, transport: "SessionTransport", worker_manager: "WorkerManager"
+    ) -> None:
         self.transport = transport
         self.worker_manager = worker_manager
         self._challenge_source_map: Dict[str, Dict[str, Any]] = {}
@@ -56,22 +62,20 @@ class ChallengePipeline:
                 return
 
             # Phase 1: send commitment
-            bt.logging.info(f"🧪 Phase1 commit | challenge_id={task_id}")
+            bt.logging.info(f"🚀 Phase1 commit | challenge_id={task_id}")
             commitment_data = CommitmentData(
                 challenge_id=task_id,
                 worker_id=worker_id,
                 commitments=[Commitment(**c) for c in result.get("commitments", [])],
             )
 
-            # Phase 1 must respond quickly; if validator doesn't respond
-            # (e.g., no proof requests) within 30s, free the worker.
             challenge_synapse_result = await self.transport.send_single_request(
                 operation="challenge_commitment",
                 synapse_class=ProtocolRegistry.get(ProtocolTypes.CHALLENGE),
                 request_data=commitment_data,
                 target_hotkey=validator_info["hotkey"],
                 axon=validator_info["axon"],
-                timeout=30,
+                timeout=15,
                 validator_uid=validator_info["uid"],
             )
 
@@ -96,7 +100,7 @@ class ChallengePipeline:
 
             proof_requests = [ProofRequest(**pr) for pr in proof_requests_data]
             bt.logging.info(
-                f"🧪 Phase1 complete | challenge_id={task_id} proof_requests={len(proof_requests)}"
+                f"✅ Phase1 complete | challenge_id={task_id} proof_requests={len(proof_requests)}"
             )
 
             proof_response = await self.worker_manager.get_challenge_proof(
@@ -110,6 +114,11 @@ class ChallengePipeline:
                     f"❌ Proof generation failed | challenge_id={task_id} error={proof_response.get('error') if proof_response else 'no response'}"
                 )
                 return
+
+            # Record the time when worker responded with proof data
+            self._challenge_timestamps.setdefault(task_id, {})[
+                "worker_proof_response_ts"
+            ] = int(time.time() * 1000)
 
             all_timestamps = {
                 **self._challenge_timestamps.get(task_id, {}),
@@ -125,20 +134,16 @@ class ChallengePipeline:
                 debug_info={"timestamps": all_timestamps},
             )
 
-            bt.logging.info(f"🧪 Phase2 proof | challenge_id={task_id}")
+            bt.logging.info(f"🚀 Phase2 proof | challenge_id={task_id}")
             proof_result = await self.transport.send_single_request(
                 operation="challenge_proof",
                 synapse_class=ProtocolRegistry.get(ProtocolTypes.CHALLENGE_PROOF),
                 request_data=proof_data,
                 target_hotkey=validator_info["hotkey"],
                 axon=validator_info["axon"],
-                timeout=300,
+                timeout=40,
                 validator_uid=validator_info["uid"],
             )
-
-            self._challenge_timestamps.setdefault(task_id, {})[
-                "worker_proof_response_ts"
-            ] = int(time.time() * 1000)
 
             if proof_result.success:
                 bt.logging.info(

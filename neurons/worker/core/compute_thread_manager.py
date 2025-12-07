@@ -64,7 +64,7 @@ class ComputeThreadManager:
         )
         self.start_time = time.time()
 
-        logger.info("🧵 ComputeThreadManager initialized | single-thread CPU/GPU")
+        logger.info("🚀 ComputeThreadManager initialized | single-thread CPU/GPU")
 
     def start(self) -> None:
         """Start compute thread pools"""
@@ -163,7 +163,7 @@ class ComputeThreadManager:
             raise RuntimeError(f"No executor available for {compute_type.value}")
 
         try:
-            logger.info(f"📥 Submit compute | type={compute_type.value} id={task_id}")
+            logger.info(f"Submit compute | type={compute_type.value} id={task_id}")
 
             compute_task.started_at = time.time()
             future = executor.submit(self._execute_in_thread, compute_task)
@@ -211,7 +211,7 @@ class ComputeThreadManager:
         """
         thread_name = threading.current_thread().name
         logger.debug(
-            f"🧵 Thread exec | type={compute_task.compute_type.value} id={compute_task.task_id} thread={thread_name}"
+            f"Thread exec | type={compute_task.compute_type.value} id={compute_task.task_id} thread={thread_name}"
         )
 
         try:

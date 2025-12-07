@@ -47,11 +47,17 @@ class TaskExecutor:
         self.default_timeout = config.get_positive_number("default_task_timeout", int)
         self.active_tasks: Dict[str, TaskInfo] = {}
         self.task_lock = asyncio.Lock()
-        self.plugins = {
-            "cpu_matrix": CPUMatrixComputePlugin(),
-            "gpu_matrix": GPUMatrixComputePlugin(config),
-        }
-        self.result_cache = ResultCache(config)
+
+        # Initialize plugins conditionally based on configuration
+        self.plugins = {"cpu_matrix": CPUMatrixComputePlugin()}
+
+        # Only initialize GPU plugin if enabled in config
+        if config.get("gpu.enable"):
+            self.plugins["gpu_matrix"] = GPUMatrixComputePlugin(config)
+            self.result_cache = ResultCache(config)
+        else:
+            self.result_cache = ResultCache(None)
+
         self.completion_callback: Optional[Callable] = None
         self.is_running = False
         self._cleanup_task: Optional[asyncio.Task] = None
@@ -227,7 +233,7 @@ class TaskExecutor:
                         if time.time() - info.start_time > info.timeout + 120
                     ]
                     for tid in stale_tasks:
-                        logger.warning(f"🧹 Cleaning stale task | id={tid}")
+                        logger.warning(f"⚠️ Cleaning stale task | id={tid}")
                         self.active_tasks.pop(tid, None)
             except asyncio.CancelledError:
                 break
