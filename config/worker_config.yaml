@@ -21,7 +21,7 @@ gpu:
   socket_path: "/tmp/gpu_tensor.sock"  # Socket path matching subnet-miner CUDA binary
 
 vmgw:
-  enable: false
+  enable: true
   socket_path: "/run/libvirt/libvirt-sock"  # Socket path to libvirt
 
 # System monitoring settings
