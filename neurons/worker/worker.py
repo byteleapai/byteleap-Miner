@@ -51,7 +51,7 @@ class WorkerService:
                 worker_id=self.worker_id,
                 worker_version=WORKER_VERSION,
                 capabilities=self.capabilities,
-                config_file=self.config.config_file,
+                config=self.config,
             )
 
         # Runtime status

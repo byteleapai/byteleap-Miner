@@ -62,19 +62,45 @@ source ./venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### Worker Dependencies
+Before starting the worker, install these required system packages:
+```bash
+sudo apt install -y libvirt-daemon-system libvirt-clients qemu-system-x86 virtinst virt-manager virt-viewer libvirt-dev python3-libvirt 
+sudo apt install -y qemu-utils 
+sudo apt install -y cloud-utils
+sudo apt-get install python3-dev
+```
+
+Then execute the environment detection script
+
+```bash
+bash scripts/vm_check.sh
+```
+After the script detection is completed, if the device supports the rental business, the basic image will be automatically downloaded.
+
 ### Configuration
 Configure your setup in these files:
 - `config/miner_config.yaml` - Network settings, wallet, worker management
 - `config/worker_config.yaml` - Miner connection, compute settings
 
 **GPU Configuration:**
-Workers automatically launch the CUDA binary (`bin/subnet-miner_static`) for GPU challenge execution. The worker config includes:
+Workers can enable GPU challenge execution through an external CUDA binary:
 ```yaml
 gpu:
-  enable: true
-  auto_start: true
+  enable: true           # Enable/disable GPU challenge execution
+  auto_start: true       # Auto-start GPU binary on worker startup
   binary_path: "./bin/subnet-miner_static"
 ```
+
+**VM Gateway (VMGW) Integration:**
+Workers can connect to a VM gateway for virtual machine orchestration and lease management. The VMGW client runs in a dedicated thread, managing enrollment, certificate lifecycle, and mTLS session connectivity:
+```yaml
+vmgw:
+  enable: true           # Enable/disable VM gateway client thread
+  socket_path: ""        # Reserved for libvirt socket integration
+```
+
+**Note:** GPU and VMGW features are independent and can be configured separately.
 
 ### Running Components
 
@@ -93,24 +119,14 @@ python scripts/run_worker.py --config config/worker_config.yaml
 ## Technical Architecture
 
 ```
-┌────────────────────────┐                       ┌───────────────────┐
-│      Validator         │       Encrypted       │       Miner       │
-│     (Bittensor)        │ ←── Communication ─── │    (Bittensor)    │
-│                        │    (via bittensor)    │                   │
-│ • Challenge Creation   │                       │ • Worker Mgmt.    │
-│ • Score Validation     │                       │ • Resource Agg.   │
-│ • Weight Calculation   │                       │ • Task Routing    │
-└────────────────────────┘                       └───────────────────┘
-                                                          ↑
-                                                          │ WebSocket
-                                                          │
-                                               ┌───────────────────────┐
-                                               │      Worker(s)        │
-                                               │                       │
-                                               │ • System Monitoring   │
-                                               │ • Challenge Execution │
-                                               │ • Compute Tasks       │
-                                               └───────────────────────┘
+┌────────────────────────┐                       ┌───────────────────┐                   ┌────────────────────────┐
+│       Validator        │                       │       Miner       │                   │       Worker(s)        │
+│      (Bittensor)       │       Encrypted       │    (Bittensor)    │                   │                        │
+│                        │ ←── Communication ─── │                   │ ←── WebSocket ──→ │ • System Monitoring    │
+│ • Challenge Creation   │    (via bittensor)    │ • Worker Mgmt.    │      (1 : N)      │ • Challenge Execution  │
+│ • Score Validation     │                       │ • Resource Agg.   │                   │ • VMGW Session         │
+│ • Weight Calculation   │                       │ • Task Routing    │                   │ • Libvirt Mgmt.        │
+└────────────────────────┘                       └───────────────────┘                   └────────────────────────┘
 ```
 
 ### Core Components
@@ -126,6 +142,15 @@ python scripts/run_worker.py --config config/worker_config.yaml
 - CPU/GPU challenge execution
 - Compute task processing
 - Performance metrics collection
+- VM gateway client thread for enrollment + VM lifecycle connectivity (see below)
+
+### VM Gateway Integration
+
+Workers can optionally connect to a VM gateway for virtual machine orchestration:
+- Dedicated client thread manages enrollment, certificate lifecycle, and mTLS WebSocket session
+- Enrollment tokens are fetched from validators via miner relay
+- Certificate artifacts are persisted beside the worker config file
+- Automatic certificate validation and renewal ensures continuous connectivity
 
 **Shared Libraries** (`neurons/shared/`)
 - Cryptographic challenge protocols

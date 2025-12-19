@@ -8,3 +8,4 @@ py-cpuinfo>=9.0.0
 websockets>=11.0.0
 loguru>=0.7.2
 requests>=2.31.0
+libvirt-python>=11.9.0

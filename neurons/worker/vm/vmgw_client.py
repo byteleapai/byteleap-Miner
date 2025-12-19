@@ -29,6 +29,11 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import Timeout as RequestsTimeout
 from websockets.protocol import State as WebSocketState
 
+from neurons.shared.config.config_manager import ConfigManager
+from neurons.worker.vm.vm_manager import handle_vm_operation
+from neurons.shared.utils.system_monitor import \
+    EnhancedSystemMonitor as SystemMonitor
+
 VMGW_STATE_FILE = "vmgw_state.json"
 CERT_RENEW_THRESHOLD_DAYS = 30
 HEARTBEAT_FALLBACK_SECONDS = 30
@@ -44,14 +49,15 @@ class VMGatewayClient:
         worker_id: str,
         worker_version: str,
         capabilities: Optional[list],
-        config_file: str,
+        config: ConfigManager,
     ):
         self.worker_service = worker_service
         self.worker_id = worker_id
         self.worker_version = worker_version
         self.capabilities = capabilities or []
 
-        config_path = Path(config_file).resolve()
+        self.config = config
+        config_path = Path(self.config.config_file).resolve()
         config_dir = config_path.parent
         self.state_file = config_dir / VMGW_STATE_FILE
 
@@ -68,6 +74,8 @@ class VMGatewayClient:
         self._expected_nonce: Optional[str] = None
         self._force_reconnect = False
         self._pending_renew_response: Optional[asyncio.Future] = None
+
+        self.system_monitor = SystemMonitor()
 
     # Thread lifecycle -----------------------------------------------------
 
@@ -204,6 +212,24 @@ class VMGatewayClient:
         return False
 
     # State management -----------------------------------------------------
+    def _parse_iso_datetime(self, iso_str: str) -> datetime:
+        """Parse ISO datetime string with optional microseconds and Zulu offset."""
+        iso_str = iso_str.replace("Z", "+00:00")
+        
+        if "." in iso_str and "+" in iso_str:
+            dt_part, tz_part = iso_str.split("+", 1)
+            tz_part = "+" + tz_part
+            
+            if "." in dt_part:
+                date_time_part, microsec_part = dt_part.split(".", 1)
+                if len(microsec_part) > 6:
+                    microsec_part = microsec_part[:6]
+                dt_part = f"{date_time_part}.{microsec_part}"
+            
+            iso_str = f"{dt_part}{tz_part}"
+        
+        return datetime.fromisoformat(iso_str)
+
 
     def _load_state(self) -> Optional[Dict[str, Any]]:
         """Load persisted VMGW state if available and well-formed."""
@@ -223,9 +249,7 @@ class VMGatewayClient:
                 logger.warning("⚠️ VMGW state file missing required fields")
                 return None
 
-            expires_at = datetime.fromisoformat(
-                state["expiresAt"].replace("Z", "+00:00")
-            )
+            expires_at = self._parse_iso_datetime(state["expiresAt"])
             self._cert_expires_at = expires_at
             return state
         except Exception as e:
@@ -313,6 +337,26 @@ class VMGatewayClient:
         return csr.public_bytes(serialization.Encoding.PEM).decode("utf-8")
 
     def _call_enroll(self, url: str, token: str, csr_pem: str) -> Dict[str, Any]:
+        # Get initial system info
+        system_info = self.system_monitor.get_system_info()
+        # Align GPU reporting with heartbeat logic
+        try:
+            gpu_info = self.task_executor.get_gpu_heartbeat_data()
+            plugin_active = bool(
+                gpu_info
+                and gpu_info.get("gpu_available")
+                and gpu_info.get("gpu_count", 0) > 0
+                and gpu_info.get("gpu_details")
+            )
+            if plugin_active:
+                system_info["gpu_plugin"] = gpu_info.get("gpu_details", [])
+            else:
+                nvml_gpus = self.system_monitor.get_gpu_info_nvml()
+                if isinstance(nvml_gpus, list) and nvml_gpus:
+                    system_info["gpu_info"] = nvml_gpus
+        except Exception:
+            pass
+
         """Synchronous call to /enroll endpoint."""
         headers = {
             "Authorization": f"Bearer {token}",
@@ -324,6 +368,7 @@ class VMGatewayClient:
             "workerVersion": self.worker_version,
             "capabilities": self.capabilities,
             "csrPem": csr_pem,
+            "metadata": system_info,
         }
         response = requests.post(url, headers=headers, json=payload, timeout=15)
         response.raise_for_status()
@@ -399,9 +444,7 @@ class VMGatewayClient:
         if cert_unchanged:
             logger.debug("Server returned cached certificate, no state update needed")
             # Still update expiry tracking in memory
-            self._cert_expires_at = datetime.fromisoformat(
-                enroll_response["expiresAt"].replace("Z", "+00:00")
-            )
+            self._cert_expires_at = self._parse_iso_datetime(enroll_response["expiresAt"])
             return
 
         # Certificate changed, update state
@@ -436,9 +479,7 @@ class VMGatewayClient:
 
         logger.debug("Successfully persisted VMGW enrollment data to state.json")
 
-        self._cert_expires_at = datetime.fromisoformat(
-            enroll_response["expiresAt"].replace("Z", "+00:00")
-        )
+        self._cert_expires_at = self._parse_iso_datetime(enroll_response["expiresAt"])
 
     # Connection -----------------------------------------------------------
 
@@ -599,6 +640,8 @@ class VMGatewayClient:
                 self._handle_renew_response(msg_data)
             elif msg_type == "STATS_REQUEST_V1":
                 await self._handle_stats_request(msg_data)
+            elif msg_type == "VM_OPERATION_V1":
+                await self._handle_vm_operation(msg_data)
             else:
                 logger.debug(f"Unhandled VMGW message type: {msg_type}")
 
@@ -663,6 +706,39 @@ class VMGatewayClient:
                 )
             except Exception as e:
                 logger.error(f"❌ Failed to send STATS_RESPONSE_V1: {e}")
+
+    async def _handle_vm_operation(self, msg_data: Dict[str, Any]) -> None:
+        await handle_vm_operation(self.config, msg_data, self._send_vm_operation_response)
+
+    async def _send_vm_operation_response(self, response_type: str, success: bool, 
+                                    error_message: Optional[str] = None, 
+                                    result_data: Optional[Dict] = None) -> None:
+        """Send VM operation response back to VMGW."""
+        if not self._ws or self._ws_is_closed():
+            logger.warning("⚠️ Cannot send VM operation response: WebSocket not connected")
+            return
+        
+        response_payload = {
+            "type": response_type,
+            "data": {
+                "success": success
+            }
+        }
+        
+        if result_data:
+            response_payload["data"]["result"] = result_data.get("result", {})
+        
+        if not success:
+            error_message = result_data.get("error_message", "Unknown error")
+            response_payload["data"]["error"] = error_message
+        else:
+            response_payload["data"]["execution_time"] = result_data.get("execution_time")
+
+        try:
+            await self._ws.send(json.dumps(response_payload))
+            logger.debug(f"VMGW sent | type=VM_OPERATION_RESPONSE_V1 response_type={response_type} success={success}")
+        except Exception as e:
+            logger.error(f"❌ Failed to send VM operation response: {e}")
 
     # Heartbeat ------------------------------------------------------------
 

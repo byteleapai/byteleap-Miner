@@ -17,13 +17,6 @@ import psutil
 import requests
 
 try:
-    import py3nvml.py3nvml as nvml
-
-    NVML_AVAILABLE = True
-except ImportError:
-    NVML_AVAILABLE = False
-
-try:
     import cpuinfo
 
     CPUINFO_AVAILABLE = True
@@ -35,15 +28,6 @@ class EnhancedSystemMonitor:
     """Enhanced system monitoring tool with improved cross-platform hardware detection"""
 
     def __init__(self):
-        if NVML_AVAILABLE:
-            try:
-                nvml.nvmlInit()
-                self._nvml_initialized = True
-            except Exception:
-                self._nvml_initialized = False
-        else:
-            self._nvml_initialized = False
-        # Public IP cache
         self._public_ip_cache: Optional[str] = None
         self._public_ip_cache_time: float = 0.0
         self._public_ip_ttl_seconds: int = 3600
@@ -311,8 +295,16 @@ class EnhancedSystemMonitor:
 
     def get_gpu_info_nvml(self) -> List[Dict[str, Any]]:
         """Return GPU info via NVML, including UUIDs. Returns empty list if NVML not initialized."""
-        if not self._nvml_initialized:
+        try:
+            import py3nvml.py3nvml as nvml
+            nvml.nvmlInit()
+            nvml_initialized = True
+        except Exception:
+            nvml_initialized = False
+
+        if not nvml_initialized:
             return []
+        
         result: List[Dict[str, Any]] = []
         try:
             device_count = nvml.nvmlDeviceGetCount()
@@ -330,6 +322,7 @@ class EnhancedSystemMonitor:
                         uuid_val = uuid_val.decode("utf-8")
                 except Exception:
                     uuid_val = None
+                
                 result.append(
                     {
                         "id": i,
@@ -347,6 +340,11 @@ class EnhancedSystemMonitor:
                 )
         except Exception:
             return []
+        finally:
+            try:
+                nvml.nvmlShutdown()
+            except Exception:
+                pass
         return result
 
     def get_cpu_info(self) -> Dict[str, Any]:
