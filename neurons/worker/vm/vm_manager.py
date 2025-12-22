@@ -9,7 +9,7 @@ import uuid
 import asyncio
 import xml.etree.ElementTree as ET
 from collections import deque
-from typing import Any, Dict, Optional, Callable
+from typing import Any, Dict, Optional, Callable, List
 
 import libvirt
 import psutil
@@ -19,12 +19,6 @@ from neurons.shared.config.config_manager import ConfigManager
 from neurons.worker.vm.vm_monitor import VMMonitor
 from neurons.worker.vm.vm_tailscale import configure_tailscale_on_vm
 from neurons.worker.vm.vm_sshkey import SSHKeyManager
-from neurons.worker.vm.nvidia_gpu_switcher import (
-    is_gpu_in_use,
-    get_nvidia_pci_addresses, 
-    bind_nvidia_to_vfio, 
-    bind_gpu_to_nvidia
-)
     
 
 class VirtualMachineInfo:
@@ -169,9 +163,6 @@ class VMManagerPlugin:
                 # Re-raise other libvirt errors from undefine operation
                 raise Exception(f"Failed to undefine domain: {str(undefine_error)}")
             
-            # Step 3:
-            bind_gpu_to_nvidia(vm_gpu_pci_addresses)
-
         except Exception as e:
             raise Exception(f"Failed to destroy domain: {str(e)}")
     def _check_and_fix_disk_permissions(self, vm_id):
@@ -512,7 +503,7 @@ class VMManagerPlugin:
             logger.info("Configuring GPU passthrough...")
             
             # Get available GPU devices
-            available_gpus, nvidia_pci_addr_count = self._detect_available_gpu_pci_ids()
+            available_gpus = self._detect_available_gpu_pci_ids()
 
             if not available_gpus:
                 raise Exception("No NVIDIA GPU detected, cannot enable GPU passthrough")
@@ -521,9 +512,6 @@ class VMManagerPlugin:
                 raise Exception(f"Requested {gpu_count} GPUs, but only {len(available_gpus)} available")
             
             used_gpus = available_gpus[:gpu_count]
-
-            # Bind available GPUs to VFIO driver
-            bind_nvidia_to_vfio(used_gpus, nvidia_pci_addr_count)
 
             # Add device configuration for each GPU
             for gpu in used_gpus:
@@ -702,13 +690,78 @@ class VMManagerPlugin:
         """Detect GPU device PCI IDs on host machine"""
 
         # Get all NVIDIA GPUs
-        nvidia_pci_addr = get_nvidia_pci_addresses()
+        nvidia_pci_addr = self.get_nvidia_pci_addresses()
 
-        # Filter out GPUs that are in use
-        available_pci_addr = [addr for addr in nvidia_pci_addr if not is_gpu_in_use(addr['pci_addr'])]
+        return nvidia_pci_addr
 
-        return available_pci_addr, len(nvidia_pci_addr)
+    def get_nvidia_pci_addresses(self) -> List[str]:
+        """
+        Detects all NVIDIA GPUs currently bound to the 'vfio-pci' driver
+        and returns their PCI addresses, vendor IDs, and device IDs.
 
+        Returns:
+            List[Dict[str, str]]: A list of dictionaries, each containing 'pci_addr', 'vendor_id', and 'device_id' keys.
+        """
+        nvidia_gpus = []
+        pci_devices_path = "/sys/bus/pci/devices/"
+
+        if not os.path.exists(pci_devices_path):
+            logger.warning(f"Error: PCI devices path not found at {pci_devices_path}")
+            return nvidia_gpus
+        
+        try:
+            for device_dir in os.listdir(pci_devices_path):
+                pci_address_full = device_dir
+                # Basic regex check for PCI address format D.B.DD.F
+                if not re.match(r"^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]$", pci_address_full):
+                    continue
+
+                vendor_path = os.path.join(pci_devices_path, pci_address_full, "vendor")
+                device_path = os.path.join(pci_devices_path, pci_address_full, "device")
+                class_path = os.path.join(pci_devices_path, pci_address_full, "class")
+                driver_path = os.path.join(pci_devices_path, pci_address_full, "driver")
+
+                if not (os.path.exists(vendor_path) and os.path.exists(device_path) and os.path.exists(class_path)):
+                    continue
+
+                try:
+                    with open(vendor_path, 'r') as f:
+                        vendor_id = f.read().strip()
+                    with open(device_path, 'r') as f:
+                        device_id = f.read().strip()
+                    with open(class_path, 'r') as f:
+                        device_class = f.read().strip()
+                except IOError as e:
+                    logger.warning(f"Warning: Could not read vendor/device/class for {pci_address_full}: {e}")
+                    continue
+
+                # NVIDIA vendor ID is 0x10de
+                # Class codes for VGA/3D/Display controllers usually start with 0x03
+                if vendor_id == "0x10de" and device_class.startswith("0x03"):
+                    # Check if it's currently bound to the 'vfio-pci' driver
+                    if os.path.exists(driver_path) and os.path.islink(driver_path):
+                        current_driver_link = os.readlink(driver_path)
+                        current_driver = os.path.basename(current_driver_link)
+                        if current_driver == "vfio-pci":
+                            # Convert full PCI address to short format (remove domain prefix)
+                            # from '0000:81:00.0' to '81:00.0' to match vm_manager.py format
+                            pci_addr_short = pci_address_full.replace('0000:', '')
+                            # Remove '0x' prefix from vendor_id and device_id to match vm_manager.py format
+                            vendor_id_no_prefix = vendor_id[2:]
+                            device_id_no_prefix = device_id[2:]
+                            
+                            nvidia_gpus.append({
+                                'pci_addr': pci_addr_short,
+                                'vendor_id': vendor_id_no_prefix,
+                                'device_id': device_id_no_prefix
+                            })
+            
+            logger.info(f"Detected {len(nvidia_gpus)} NVIDIA GPUs bound to vfio-pci driver: {nvidia_gpus}")
+
+        except Exception as e:
+            logger.error(f"Error: Could not process PCI devices directory: {e}")
+        
+        return nvidia_gpus
 
     def _get_gpus_availability(self, gpu_pci_map):
         available_gpus = []

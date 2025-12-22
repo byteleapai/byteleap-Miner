@@ -51,6 +51,7 @@ Miners earn rewards through two main factors:
   - GeForce RTX 3090, 4090, 5090
   - Data center GPUs: A100, H100, H200, B200
   - Proper NVIDIA drivers and CUDA runtime installed
+- Must be a physical machine or bare metal — deployment on Docker or virtual machines is not supported.
 
 ### Installation
 ```bash
@@ -62,8 +63,17 @@ source ./venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Worker Dependencies
-Before starting the worker, install these required system packages:
+### Environment Setup
+
+Upgrade the system kernel based on the Ubuntu version (for example, Ubuntu 22.04)
+If the current kernel version is higher than 6.0.0, the upgrade can be skipped.
+
+```bash 
+sudo apt install linux-generic-hwe-22.04
+```
+After the upgrade is complete, restart the device and then proceed to the next step.
+
+Install these required system packages:
 ```bash
 sudo apt install -y libvirt-daemon-system libvirt-clients qemu-system-x86 virtinst virt-manager virt-viewer libvirt-dev python3-libvirt 
 sudo apt install -y qemu-utils 
@@ -71,33 +81,49 @@ sudo apt install -y cloud-utils
 sudo apt-get install python3-dev
 ```
 
-Then execute the environment detection script
-
 ```bash
+# Virtualization Environment Check, Base System Image Download
 bash scripts/vm_check.sh
 ```
-After the script detection is completed, if the device supports the rental business, the basic image will be automatically downloaded.
+
+After the check is completed, proceed with GPU binding. This operation will bind all local NVIDIA GPUs
+
+```bash
+cd bin
+./vfio-setup bind
+```
+
+After successful binding, reboot the device and perform the verification check.
+```bash
+./vfio-setup verify
+```
+If the output is:
+```bash
+=== Summary ===  
+VFIO-bound NVIDIA GPUs: 8  
+Other NVIDIA GPUs: 0  
+Total NVIDIA GPUs: 8
+```
+it indicates that the binding was successful. Next, modify the configuration file and start the program.
+
+If the process fails, please run:
+```bash
+./vfio-setup debug
+```
+and provide the output to our technical support team so they can assist you with troubleshooting.
+
 
 ### Configuration
 Configure your setup in these files:
 - `config/miner_config.yaml` - Network settings, wallet, worker management
 - `config/worker_config.yaml` - Miner connection, compute settings
 
-**GPU Configuration:**
-Workers can enable GPU challenge execution through an external CUDA binary:
-```yaml
-gpu:
-  enable: true           # Enable/disable GPU challenge execution
-  auto_start: true       # Auto-start GPU binary on worker startup
-  binary_path: "./bin/subnet-miner_static"
-```
-
 **VM Gateway (VMGW) Integration:**
 Workers can connect to a VM gateway for virtual machine orchestration and lease management. The VMGW client runs in a dedicated thread, managing enrollment, certificate lifecycle, and mTLS session connectivity:
 ```yaml
 vmgw:
-  enable: true           # Enable/disable VM gateway client thread
-  socket_path: ""        # Reserved for libvirt socket integration
+  enable: true
+  socket_path: "/run/libvirt/libvirt-sock"  # Socket path to libvirt
 ```
 
 **Note:** GPU and VMGW features are independent and can be configured separately.

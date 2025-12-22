@@ -21,7 +21,7 @@ from neurons.worker.core.task_executor import TaskExecutor
 from neurons.worker.vm import VMGatewayClient
 
 # Worker version
-WORKER_VERSION = "0.0.3"
+WORKER_VERSION = "0.0.4"
 
 
 class WorkerService:

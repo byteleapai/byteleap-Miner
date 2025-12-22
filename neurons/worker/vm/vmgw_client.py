@@ -757,6 +757,26 @@ class VMGatewayClient:
 
     async def _send_heartbeat(self) -> None:
         """Send heartbeat payload with coarse metrics."""
+        # Get initial system info
+        system_info = self.system_monitor.get_system_info()
+        # Align GPU reporting with heartbeat logic
+        try:
+            gpu_info = self.task_executor.get_gpu_heartbeat_data()
+            plugin_active = bool(
+                gpu_info
+                and gpu_info.get("gpu_available")
+                and gpu_info.get("gpu_count", 0) > 0
+                and gpu_info.get("gpu_details")
+            )
+            if plugin_active:
+                system_info["gpu_plugin"] = gpu_info.get("gpu_details", [])
+            else:
+                nvml_gpus = self.system_monitor.get_gpu_info_nvml()
+                if isinstance(nvml_gpus, list) and nvml_gpus:
+                    system_info["gpu_info"] = nvml_gpus
+        except Exception:
+            pass
+
         uptime = int(time.time() - self._connected_at)
         payload = {
             "type": "HEARTBEAT_V1",
@@ -767,6 +787,7 @@ class VMGatewayClient:
                     "memory_usage": 0.0,
                     "active_vms": 0,
                 },
+                "metadata": system_info,
             },
         }
         if self._ws and not self._ws_is_closed():

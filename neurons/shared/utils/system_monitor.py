@@ -302,49 +302,136 @@ class EnhancedSystemMonitor:
         except Exception:
             nvml_initialized = False
 
-        if not nvml_initialized:
-            return []
-        
         result: List[Dict[str, Any]] = []
-        try:
-            device_count = nvml.nvmlDeviceGetCount()
-            for i in range(device_count):
-                handle = nvml.nvmlDeviceGetHandleByIndex(i)
-                name = nvml.nvmlDeviceGetName(handle)
-                if isinstance(name, bytes):
-                    name = name.decode("utf-8")
-                memory_info = nvml.nvmlDeviceGetMemoryInfo(handle)
-                util_rates = nvml.nvmlDeviceGetUtilizationRates(handle)
-                temp = nvml.nvmlDeviceGetTemperature(handle, nvml.NVML_TEMPERATURE_GPU)
-                try:
-                    uuid_val = nvml.nvmlDeviceGetUUID(handle)
-                    if isinstance(uuid_val, bytes):
-                        uuid_val = uuid_val.decode("utf-8")
-                except Exception:
-                    uuid_val = None
-                
-                result.append(
-                    {
-                        "id": i,
-                        "name": name,
-                        "memory_total": memory_info.total // (1024 * 1024),
-                        "memory_used": memory_info.used // (1024 * 1024),
-                        "memory_free": memory_info.free // (1024 * 1024),
-                        "memory_util": (memory_info.used / memory_info.total) * 100,
-                        "gpu_util": getattr(util_rates, "gpu", None),
-                        "temperature": temp,
-                        "vendor": "NVIDIA",
-                        "type": "discrete",
-                        "uuid": uuid_val,
-                    }
-                )
-        except Exception:
-            return []
-        finally:
+        if nvml_initialized:
             try:
-                nvml.nvmlShutdown()
+                device_count = nvml.nvmlDeviceGetCount()
+                for i in range(device_count):
+                    handle = nvml.nvmlDeviceGetHandleByIndex(i)
+                    name = nvml.nvmlDeviceGetName(handle)
+                    if isinstance(name, bytes):
+                        name = name.decode("utf-8")
+                    memory_info = nvml.nvmlDeviceGetMemoryInfo(handle)
+                    util_rates = nvml.nvmlDeviceGetUtilizationRates(handle)
+                    temp = nvml.nvmlDeviceGetTemperature(handle, nvml.NVML_TEMPERATURE_GPU)
+                    try:
+                        uuid_val = nvml.nvmlDeviceGetUUID(handle)
+                        if isinstance(uuid_val, bytes):
+                            uuid_val = uuid_val.decode("utf-8")
+                    except Exception:
+                        uuid_val = None
+                    
+                    result.append(
+                        {
+                            "id": i,
+                            "name": name,
+                            "memory_total": memory_info.total // (1024 * 1024),
+                            "memory_used": memory_info.used // (1024 * 1024),
+                            "memory_free": memory_info.free // (1024 * 1024),
+                            "memory_util": (memory_info.used / memory_info.total) * 100,
+                            "gpu_util": getattr(util_rates, "gpu", None),
+                            "temperature": temp,
+                            "vendor": "NVIDIA",
+                            "type": "discrete",
+                            "uuid": uuid_val,
+                        }
+                    )
             except Exception:
-                pass
+                bt.logging.warning("Error fetching GPU info via NVML")
+            finally:
+                try:
+                    nvml.nvmlShutdown()
+                except Exception:
+                    pass
+
+        return self._get_gpu_info_pci(result)
+
+    def _get_gpu_info_pci(self, result) -> List[Dict[str, Any]]:
+        """Add PCI info to GPU result."""
+        GPU_MODEL_MAP = {
+            # RTX 50 
+            "2b85": "NVIDIA GeForce RTX 5090 (32GB)",
+            "2b83": "NVIDIA GeForce RTX 5090 (32GB)", 
+            
+            # RTX 40 
+            "2684": "NVIDIA GeForce RTX 4090 (24GB)",
+            
+            # RTX 30 
+            "2204": "NVIDIA GeForce RTX 3090 (24GB)",
+            "2207": "NVIDIA GeForce RTX 3090 (24GB)", 
+            
+            # A100 
+            "20b2": "NVIDIA A100 80GB SXM4",
+            "20b5": "NVIDIA A100 80GB PCIe",
+            "20f3": "NVIDIA A100 80GB",
+            
+            # H100 
+            "2330": "NVIDIA H100 80GB SXM5",
+            "2331": "NVIDIA H100 80GB",
+            "2321": "NVIDIA H100 80GB PCIe",
+            "2322": "NVIDIA H100 94GB HBM3",
+            "2337": "NVIDIA H100 NVL",
+            "2339": "NVIDIA H100 NVL",
+            
+            # H200 / B200 
+            "2338": "NVIDIA H200 (141GB)",
+            "233d": "NVIDIA H200 (141GB)",
+            "2601": "NVIDIA Blackwell B200",
+            "2681": "NVIDIA Blackwell B200",
+        }
+
+        try:
+            pci_devices_path = "/sys/bus/pci/devices/"
+            
+            if os.path.exists(pci_devices_path):
+                vfio_gpu_id = len(result)
+                
+                for device_dir in os.listdir(pci_devices_path):
+                    pci_address_full = device_dir
+                    if not re.match(r"^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]$", pci_address_full):
+                        continue
+
+                    try:
+                        with open(os.path.join(pci_devices_path, pci_address_full, "vendor"), 'r') as f:
+                            vendor_id = f.read().strip().lower()
+                        with open(os.path.join(pci_devices_path, pci_address_full, "device"), 'r') as f:
+                            device_id = f.read().strip().lower()
+                        with open(os.path.join(pci_devices_path, pci_address_full, "class"), 'r') as f:
+                            device_class = f.read().strip().lower()
+                        
+                        if vendor_id == "0x10de" and device_class.startswith("0x03"):
+                            driver_path = os.path.join(pci_devices_path, pci_address_full, "driver")
+                            
+                            if os.path.exists(driver_path) and os.path.islink(driver_path):
+                                current_driver = os.path.basename(os.readlink(driver_path))
+                                
+                                if current_driver == "vfio-pci":
+                                    raw_id = device_id.replace("0x", "").lower().strip()
+                                    
+                                    if raw_id in GPU_MODEL_MAP:
+                                        name = GPU_MODEL_MAP[raw_id]
+                                    else:
+                                        name = f"NVIDIA GPU (Unknown ID: {raw_id})"
+
+                                    result.append({
+                                        "id": vfio_gpu_id,
+                                        "name": name,
+                                        "memory_total": 0,
+                                        "memory_used": 0,
+                                        "memory_free": 0,
+                                        "memory_util": 0,
+                                        "gpu_util": None,
+                                        "temperature": None,
+                                        "vendor": "NVIDIA",
+                                        "type": "discrete",
+                                        "uuid": pci_address_full, 
+                                    })
+                                    vfio_gpu_id += 1
+                    except (IOError, Exception):
+                        continue
+        except Exception:
+            pass
+
         return result
 
     def get_cpu_info(self) -> Dict[str, Any]:
