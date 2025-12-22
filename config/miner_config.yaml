@@ -7,6 +7,8 @@ subtensor:
 metagraph:
   sync_interval: 60               # Metagraph sync interval (in seconds)
   validator_whitelist:            # Whitelist validators (with optional axon override)
+    "5FWiXLaW5s9q8xC7FrBZ3JkGJyC6Feh2Xep5awRWrJPesMpz": null
+    "5GRViDgqddpH3qB9A6nqPgMepgum51ZUZ199ksXQuCFsn128": null
     "5F9KN9FQCzNzkyc9ZtmsdFJzc5GTVQCwkd3zER4gm9uyJi2H": null
   validator_min_stake_tao: 10000  # Minimum stake required for non-whitelisted validators
   blacklist:                      # Passive blacklist configuration
