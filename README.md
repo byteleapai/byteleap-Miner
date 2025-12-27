@@ -14,8 +14,8 @@ ByteLeap is a distributed compute resource platform that connects GPU providers 
 Miners earn rewards through two main factors:
 
 ### Score Components (Weighted)
-- **Lease Revenue** (70%): Active compute rentals generate the primary score
-- **Challenge Performance** (30%): Computational benchmarks for idle workers
+- **Lease Revenue** (90%): Active compute rentals generate the primary score
+- **Challenge Performance** (10%): Computational benchmarks for idle workers
 - **Availability Multiplier**: Based on 169-hour online presence
 
 ### How Scoring Works
@@ -81,11 +81,6 @@ sudo apt install -y cloud-utils
 sudo apt-get install python3-dev
 ```
 
-```bash
-# Virtualization Environment Check, Base System Image Download
-bash scripts/vm_check.sh
-```
-
 After the check is completed, proceed with GPU binding. This operation will bind all local NVIDIA GPUs
 
 ```bash
@@ -128,7 +123,7 @@ vmgw:
 
 **Note:** GPU and VMGW features are independent and can be configured separately.
 
-### Running Components
+### Test run component
 
 **Start Miner** (aggregates workers, communicates with Bittensor):
 ```bash
@@ -138,6 +133,23 @@ python scripts/run_miner.py --config config/miner_config.yaml
 **Start Worker** (provides compute resources):
 ```bash
 python scripts/run_worker.py --config config/worker_config.yaml
+```
+
+### For production use, please run it with PM2.
+
+Start all services (Miner + Worker):
+```bash
+pm2 start ecosystem.config.js
+```
+
+Start Miner only:
+```bash
+pm2 start ecosystem.config.js --only byteleap-miner
+```
+
+Start Worker only:
+```bash
+pm2 start ecosystem.config.js --only byteleap-worker
 ```
 
 **Typical Setup**: Run one miner + multiple workers for optimal resource utilization.

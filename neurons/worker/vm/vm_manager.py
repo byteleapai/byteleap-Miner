@@ -231,9 +231,9 @@ class VMManagerPlugin:
             # Get configuration paths
             cloud_init_dir = vm_params.get("cloud_init_dir", "")
             image_path = os.path.join(cloud_init_dir, image_name)
-            meta_data_path = os.path.join(cloud_init_dir, f"{vm_name}-meta-data")
-            user_data_path = os.path.join(cloud_init_dir, f"{vm_name}-user-data")
-            cloud_init_iso_path = os.path.join(cloud_init_dir, f"{vm_name}-cloud-init.iso")
+            meta_data_path = os.path.join(cloud_init_dir, f"meta-data")
+            user_data_path = os.path.join(cloud_init_dir, f"user-data")
+            cloud_init_iso_path = os.path.join(cloud_init_dir, f"cloud-init.iso")
             
             # Ensure cloud_init_dir exists
             if not os.path.exists(cloud_init_dir):
@@ -352,7 +352,7 @@ class VMManagerPlugin:
         # Execute synchronous command directly
         cmd = f"qemu-img create -f qcow2 -b {base_image} -F qcow2 {disk_path} {size_gb}G"
         try:
-            result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
+            result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True, timeout=20)
             logger.debug(f"Disk creation output: {result.stdout}")
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to create disk: {cmd}, error: {e.stderr}")
@@ -434,13 +434,13 @@ class VMManagerPlugin:
         # Use genisoimage or mkisofs command to create ISO
         cmd = f"genisoimage -output {iso_path} -volid cidata -joliet -rock {meta_data_path} {user_data_path}"
         try:
-            subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
+            subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True, timeout=20)
             logger.info("genisoimage sucess")
         except subprocess.CalledProcessError:
             # Try using mkisofs as alternative
             cmd = f"mkisofs -output {iso_path} -volid cidata -joliet -rock {meta_data_path} {user_data_path}"
             try:
-                result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
+                result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True, timeout=20)
                 logger.debug(f"mkisofs output: {result.stdout}")
             except subprocess.CalledProcessError as e:
                 logger.error(f"Failed to create cloud-init ISO: {cmd}, error: {e.stderr}")
@@ -956,7 +956,7 @@ class VMManagerPlugin:
                         disk_path = source.get('file')
                         try:
                             cmd = ['qemu-img', 'info', '--output=json', disk_path]
-                            result = subprocess.run(cmd, capture_output=True, text=True)
+                            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
                             if result.returncode == 0:
                                 import json
                                 disk_info = json.loads(result.stdout)

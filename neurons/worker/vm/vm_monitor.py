@@ -235,7 +235,7 @@ class VMMonitor:
                 '--timeout', '5'
             ]
             
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
             response = json.loads(result.stdout)
             
             # Check if response contains success flag
@@ -270,7 +270,7 @@ class VMMonitor:
             
             # Execute command to get PID
             cmd = ['virsh', 'qemu-agent-command', vm_id, exec_cmd, '--timeout', '5']
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=10)
             response = json.loads(result.stdout)
             
             if 'return' not in response or 'pid' not in response['return']:
@@ -291,7 +291,7 @@ class VMMonitor:
                 })
                 
                 cmd = ['virsh', 'qemu-agent-command', vm_id, status_cmd, '--timeout', '5']
-                status_result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                status_result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
                 status_response = json.loads(status_result.stdout)
                 
                 if 'return' not in status_response:

@@ -20,7 +20,7 @@ def is_guest_agent_available(vm_id):
     try:
         # Command to check guest agent status
         cmd = ['virsh', 'domstate', vm_id]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
         
         # If VM is not running, guest agent can't be available
         if 'running' not in result.stdout.lower():
@@ -32,7 +32,7 @@ def is_guest_agent_available(vm_id):
         })
         
         ping_cmd = ['virsh', 'qemu-agent-command', vm_id, test_cmd, '--timeout', '3']
-        ping_result = subprocess.run(ping_cmd, capture_output=True, text=True, check=True)
+        ping_result = subprocess.run(ping_cmd, capture_output=True, text=True, check=True, timeout=30)
         
         # Check if response contains 'return' key (successful ping)
         response = json.loads(ping_result.stdout)
@@ -142,7 +142,7 @@ def execute_guest_command_with_virsh(vm_id, command):
         
         # Execute guest-exec command to get PID
         cmd = ['virsh', 'qemu-agent-command', vm_id, exec_cmd, '--timeout', '5']
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
         
         # Parse PID
         response = json.loads(result.stdout)
@@ -169,7 +169,8 @@ def execute_guest_command_with_virsh(vm_id, command):
                 ['virsh', 'qemu-agent-command', vm_id, status_cmd, '--timeout', '5'],
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                timeout=30
             )
             
             status_response = json.loads(status_result.stdout)

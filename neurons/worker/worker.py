@@ -13,6 +13,11 @@ from typing import Any, Dict, Optional
 
 from loguru import logger
 
+# Import unified version
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from __version__ import __version__
+
+from neurons.shared.auto_updater import AutoUpdater
 from neurons.shared.utils.system_monitor import \
     EnhancedSystemMonitor as SystemMonitor
 from neurons.worker.communication.websocket_client import WebSocketClient
@@ -20,8 +25,8 @@ from neurons.worker.config.worker_config import WorkerConfig
 from neurons.worker.core.task_executor import TaskExecutor
 from neurons.worker.vm import VMGatewayClient
 
-# Worker version
-WORKER_VERSION = "0.0.4"
+# Worker version (using unified version)
+WORKER_VERSION = __version__
 
 
 class WorkerService:
@@ -58,6 +63,11 @@ class WorkerService:
         self.is_running = False
         self._shutdown_event = asyncio.Event()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+        # Auto updater
+        project_root = Path(__file__).parent.parent.parent
+        self.auto_updater = AutoUpdater(WORKER_VERSION, project_root)
+        self._update_check_task = None
 
         # Setup signal handlers
         self._setup_signal_handlers()
@@ -210,6 +220,19 @@ class WorkerService:
             logger.warning("Worker service already running")
             return
 
+        # Check for updates on startup
+        try:
+            update_installed = await self.auto_updater.check_update_on_startup(
+                auto_install=True
+            )
+            if update_installed:
+                logger.warning("Update installed, please check config and restart")
+                logger.warning("Program will exit in 5 seconds...")
+                await asyncio.sleep(5)
+                sys.exit(0)
+        except Exception as e:
+            logger.warning(f"Startup update check failed: {e}")
+
         logger.info(f"🚀 Starting worker | id={self.worker_id}")
 
         try:
@@ -224,6 +247,12 @@ class WorkerService:
             if self.vmgw_client:
                 self.vmgw_client.start()
                 logger.info("VMGW client started")
+
+            # Start periodic update check
+            self._update_check_task = asyncio.create_task(
+                self.auto_updater.start_periodic_check()
+            )
+            logger.info("Auto updater started")
 
             self.is_running = True
             logger.success(f"✅ Worker started | id={self.worker_id}")
@@ -496,6 +525,16 @@ class WorkerService:
             return
 
         logger.info("⏹️ Stopping worker service")
+
+        # Stop auto updater
+        if self._update_check_task:
+            self.auto_updater.stop_periodic_check()
+            self._update_check_task.cancel()
+            try:
+                await self._update_check_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("⏹️ Auto updater stopped")
 
         # Cleanup task executor and plugins
         await self.task_executor.cleanup()

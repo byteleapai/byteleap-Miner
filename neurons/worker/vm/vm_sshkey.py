@@ -31,7 +31,7 @@ class SSHKeyManager:
         try:
             # Implementation to get VM IP address
             cmd = ['virsh', 'domifaddr', vm_id]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
             
             # Parse output to find IP address
             for line in result.stdout.strip().split('\n')[2:]:  # Skip header lines
@@ -69,7 +69,7 @@ class SSHKeyManager:
             
             # Execute guest-exec command to get PID
             cmd = ['virsh', 'qemu-agent-command', vm_id, exec_cmd, '--timeout', '5']
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
             response = json.loads(result.stdout)
             
             if 'return' not in response or 'pid' not in response['return']:
@@ -90,7 +90,7 @@ class SSHKeyManager:
                 })
                 
                 cmd = ['virsh', 'qemu-agent-command', vm_id, status_cmd, '--timeout', '5']
-                status_result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                status_result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
                 status_response = json.loads(status_result.stdout)
                 
                 if 'return' not in status_response:
