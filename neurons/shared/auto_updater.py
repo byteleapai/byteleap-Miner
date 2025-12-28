@@ -38,6 +38,26 @@ class AutoUpdater:
         self._check_task = None
         self._should_stop = False
 
+    def _normalize_version(self, version: str) -> str:
+        """
+        Normalize version string by removing prefixes like 'v', 'release-v', etc.
+
+        Args:
+            version: Version string (e.g., "v0.0.5", "release-v0.0.5", "0.0.5")
+
+        Returns:
+            Normalized version string (e.g., "0.0.5")
+        """
+        # Remove common prefixes
+        version = version.strip()
+        if version.startswith("release-v"):
+            version = version[9:]  # Remove "release-v"
+        elif version.startswith("release-"):
+            version = version[8:]  # Remove "release-"
+        elif version.startswith("v"):
+            version = version[1:]  # Remove "v"
+        return version
+
     def _compare_versions(self, version1: str, version2: str) -> int:
         """
         Compare two version strings
@@ -51,17 +71,17 @@ class AutoUpdater:
             0 if version1 == version2
             1 if version1 > version2
         """
-        # Remove 'v' prefix if present
-        v1 = version1.lstrip("v").split(".")
-        v2 = version2.lstrip("v").split(".")
+        # Normalize versions by removing prefixes
+        v1_parts = self._normalize_version(version1).split(".")
+        v2_parts = self._normalize_version(version2).split(".")
 
         # Pad to same length
-        max_len = max(len(v1), len(v2))
-        v1 += ["0"] * (max_len - len(v1))
-        v2 += ["0"] * (max_len - len(v2))
+        max_len = max(len(v1_parts), len(v2_parts))
+        v1_parts += ["0"] * (max_len - len(v1_parts))
+        v2_parts += ["0"] * (max_len - len(v2_parts))
 
         # Compare each part
-        for p1, p2 in zip(v1, v2):
+        for p1, p2 in zip(v1_parts, v2_parts):
             try:
                 n1, n2 = int(p1), int(p2)
                 if n1 < n2:
@@ -99,9 +119,15 @@ class AutoUpdater:
             with urlopen(req, timeout=10) as response:
                 data = json.loads(response.read().decode())
 
-            latest_version = data.get("tag_name", "").lstrip("v")
-            if not latest_version:
+            tag_name = data.get("tag_name", "")
+            if not tag_name:
                 logger.warning("Failed to get latest version info")
+                return None
+
+            # Normalize version from tag_name (e.g., "release-v0.0.5" -> "0.0.5")
+            latest_version = self._normalize_version(tag_name)
+            if not latest_version:
+                logger.warning("Failed to normalize version from tag_name")
                 return None
 
             # Compare versions
